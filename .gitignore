@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+
+# Environment variables
+# .env
+# .env.*
+
+# Logs
+*.log
+logs/
+
+# Database
+*.sqlite3
+*.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Python egg files
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Cache
+*.cache
+*.mypy_cache/
+*.pytest_cache/
+
+# IDE-specific files
+.vscode/
+.idea/
+*.iml
+
+# Submodule-specific
+TreadBot/.git
