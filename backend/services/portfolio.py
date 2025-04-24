@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
-from ..models.portfolio import Portfolio, Transaction, StraddleInterval
+from ..models.portfolio import Portfolio, Transaction
 from ..trader.exchange_manager import ExchangeManager
 
 logger = logging.getLogger(__name__)
@@ -200,110 +200,17 @@ class PortfolioService:
 
             current_price = ticker['last']
 
-            # Get the interval if set
-            interval = self.db.query(StraddleInterval).filter(
-                StraddleInterval.position_id == position_id
-            ).first()
-
             return {
                 "position_id": position_id,
                 "symbol": long_tx.symbol,
                 "quantity": long_tx.quantity,
                 "strike_price": long_tx.price,
                 "current_price": current_price,
-                "open_time": long_tx.timestamp.isoformat(),
-                "interval": interval.interval_minutes if interval else None
+                "open_time": long_tx.timestamp.isoformat()
             }
         except Exception as e:
             logger.error(f"Error getting straddle position: {str(e)}")
             return None
-
-    async def update_straddle_position(self, user_id: int, position_id: int, new_price: float, new_quantity: float) -> Optional[Dict]:
-        """Update an existing straddle position"""
-        try:
-            # Get both legs of the straddle
-            long_tx = self.db.query(Transaction).filter(
-                Transaction.user_id == user_id,
-                Transaction.id == position_id,
-                Transaction.type == 'BUY'
-            ).first()
-
-            if not long_tx:
-                return None
-
-            # Find the matching short position
-            short_tx = self.db.query(Transaction).filter(
-                Transaction.user_id == user_id,
-                Transaction.symbol == long_tx.symbol,
-                Transaction.type == 'SELL',
-                Transaction.timestamp == long_tx.timestamp
-            ).first()
-
-            if not short_tx:
-                return None
-
-            # Update both positions
-            long_tx.price = new_price
-            long_tx.quantity = new_quantity
-            long_tx.total = new_price * new_quantity
-
-            short_tx.price = new_price
-            short_tx.quantity = new_quantity
-            short_tx.total = new_price * new_quantity
-
-            self.db.commit()
-
-            return {
-                "symbol": long_tx.symbol,
-                "new_price": new_price,
-                "new_quantity": new_quantity,
-                "position_id": position_id
-            }
-
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"Error updating straddle position: {str(e)}")
-            return None
-
-    async def set_straddle_interval(self, user_id: int, position_id: int, interval: int) -> bool:
-        """Set or update the notification interval for a straddle position"""
-        try:
-            straddle_interval = self.db.query(StraddleInterval).filter(
-                StraddleInterval.position_id == position_id
-            ).first()
-
-            if straddle_interval:
-                straddle_interval.interval_minutes = interval
-            else:
-                straddle_interval = StraddleInterval(
-                    position_id=position_id,
-                    user_id=user_id,
-                    interval_minutes=interval
-                )
-                self.db.add(straddle_interval)
-
-            self.db.commit()
-            return True
-
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"Error setting straddle interval: {str(e)}")
-            return False
-
-    async def get_price_history(self, symbol: str, limit: int = 3) -> List[float]:
-        """Get recent price history for a symbol"""
-        try:
-            ticker = await self.exchange_manager.get_ticker(symbol)
-            if not ticker:
-                return []
-
-            # In a real implementation, you would fetch historical prices
-            # For now, we'll return the current price repeated
-            return [ticker['last']] * limit
-
-        except Exception as e:
-            logger.error(f"Error getting price history: {str(e)}")
-            return []
 
     async def get_straddle_positions(self, user_id: int) -> List[Dict]:
         """Get all active straddle positions for a user"""
@@ -326,12 +233,27 @@ class PortfolioService:
             # Process valid straddle pairs
             for key, pair in straddle_pairs.items():
                 if len(pair) == 2 and pair[0].type != pair[1].type:
-                    # Get current market price
+                    # Get current market price and recent price history
                     ticker = await self.exchange_manager.get_ticker(pair[0].symbol)
                     if not ticker:
                         continue
 
                     current_price = ticker['last']
+
+                    # Try to get price history, handle cases where we get less than 3 prices
+                    try:
+                        price_history = await self.exchange_manager.get_recent_trades(
+                            pair[0].symbol,
+                            limit=3
+                        )
+                        # Convert to list of prices, handle any available prices
+                        prices = [trade['price'] for trade in price_history] if price_history else []
+                        if not prices:
+                            prices = [current_price]  # Use at least current price if no history
+                    except Exception as e:
+                        logger.warning(f"Could not get full price history for {pair[0].symbol}: {str(e)}")
+                        prices = [current_price]  # Fallback to current price
+
                     buy_tx = next(tx for tx in pair if tx.type == 'BUY')
 
                     positions.append({
@@ -340,6 +262,7 @@ class PortfolioService:
                         "quantity": buy_tx.quantity,
                         "strike_price": buy_tx.price,
                         "current_price": current_price,
+                        "price_history": prices,  # Include whatever prices we got
                         "open_time": buy_tx.timestamp.isoformat()
                     })
 

@@ -1,13 +1,103 @@
 import logging
 import os
 from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from ..analysis.market_analyzer import MarketAnalyzer
 from ..trader.exchange_manager import ExchangeManager
 import asyncio
 from ..services.portfolio import PortfolioService
+from collections import defaultdict, deque
+from datetime import datetime, timedelta
+import time
+from typing import Dict, Set, Optional
 
 logger = logging.getLogger(__name__)
+
+class RateLimiter:
+    def __init__(self, max_requests: int, time_window: float):
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = deque()
+
+    async def acquire(self):
+        now = time.time()
+
+        # Remove old requests
+        while self.requests and self.requests[0] <= now - self.time_window:
+            self.requests.popleft()
+
+        # If we've hit the limit, wait
+        if len(self.requests) >= self.max_requests:
+            wait_time = self.requests[0] + self.time_window - now
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+
+        # Add current request
+        self.requests.append(now)
+
+class MessageQueue:
+    def __init__(self):
+        self.queue = asyncio.Queue()
+        self.rate_limiter = RateLimiter(max_requests=30, time_window=1.0)  # 30 messages per second max
+        self.retry_delays = [1, 2, 5, 10, 30]  # Exponential backoff delays in seconds
+        self.processing = False
+        self._cached_messages: Dict[str, float] = {}  # Cache to prevent duplicate messages
+        self.cache_timeout = 60  # Cache timeout in seconds
+
+    async def put(self, message: dict):
+        # Check for duplicate messages within cache timeout
+        message_key = f"{message['text'][:100]}"  # Use first 100 chars as key
+        now = time.time()
+
+        # Clean old cache entries
+        self._cached_messages = {k: v for k, v in self._cached_messages.items()
+                               if now - v < self.cache_timeout}
+
+        # Check if message is in cache
+        if message_key in self._cached_messages:
+            logger.debug(f"Duplicate message detected, skipping: {message_key}")
+            return
+
+        # Add to cache and queue
+        self._cached_messages[message_key] = now
+        await self.queue.put(message)
+
+    async def process_messages(self, bot: Bot, chat_id: str):
+        self.processing = True
+        while self.processing:
+            try:
+                message = await self.queue.get()
+
+                for attempt, delay in enumerate(self.retry_delays):
+                    try:
+                        # Apply rate limiting
+                        await self.rate_limiter.acquire()
+
+                        # Send message
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=message['text'],
+                            parse_mode=message.get('parse_mode')
+                        )
+                        break
+                    except Exception as e:
+                        if attempt == len(self.retry_delays) - 1:
+                            logger.error(f"Failed to send message after {len(self.retry_delays)} attempts: {str(e)}")
+                            raise
+                        logger.warning(f"Attempt {attempt + 1} failed, retrying in {delay}s: {str(e)}")
+                        await asyncio.sleep(delay)
+
+                self.queue.task_done()
+
+            except asyncio.CancelledError:
+                self.processing = False
+                break
+            except Exception as e:
+                logger.error(f"Error in message processor: {str(e)}")
+                await asyncio.sleep(1)  # Prevent tight loop on persistent errors
+
+    def stop(self):
+        self.processing = False
 
 class TelegramService:
     def __init__(self, market_analyzer: MarketAnalyzer, portfolio_service: PortfolioService):
@@ -19,6 +109,16 @@ class TelegramService:
         self.bot = None
         self.portfolio_service = portfolio_service
         self._initialized = False
+        self._active_notifications = defaultdict(set)
+        self._command_locks = defaultdict(asyncio.Lock)
+        self._message_queue = MessageQueue()
+        self._message_processor_task: Optional[asyncio.Task] = None
+
+    async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle unknown commands"""
+        await update.message.reply_text(
+            "❌ Unknown command. Use /help to see available commands."
+        )
 
     async def initialize(self):
         """Initialize the Telegram bot and set up command handlers"""
@@ -59,6 +159,14 @@ class TelegramService:
             self.application.add_handler(CommandHandler("close_straddle", self.handle_close_straddle))
             self.application.add_handler(CommandHandler("straddles", self.get_straddle_positions))
 
+            # Add fallback handler for unknown commands
+            self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
+
+            # Start message queue processor
+            self._message_processor_task = asyncio.create_task(
+                self._message_queue.process_messages(self.bot, self.chat_id)
+            )
+
             # Initialize and start polling in the background
             await self.application.initialize()
             await self.application.start()
@@ -72,7 +180,7 @@ class TelegramService:
         except Exception as e:
             logger.error(f"Error initializing Telegram bot: {str(e)}")
             self._initialized = False
-            # Don't raise the exception - allow the application to continue without Telegram
+            raise
 
     async def stop(self):
         """Stop the Telegram service"""
@@ -80,6 +188,19 @@ class TelegramService:
             return
 
         try:
+            # Stop message processor
+            if self._message_processor_task:
+                self._message_queue.stop()
+                self._message_processor_task.cancel()
+                try:
+                    await self._message_processor_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Stop all notification tasks
+            for position_id in list(self._active_notifications.keys()):
+                await self.stop_notifications(position_id)
+
             if self.application:
                 await self.send_message("🔴 Trading Bot is shutting down...")
                 await self.application.stop()
@@ -89,20 +210,22 @@ class TelegramService:
         except Exception as e:
             logger.error(f"Error stopping Telegram bot: {str(e)}")
 
-    async def send_message(self, message: str, parse_mode: str = None) -> bool:
-        """Base method for sending messages"""
+    async def send_message(self, message: str, parse_mode: str = None, priority: bool = False) -> bool:
+        """Queue message for sending with optional priority"""
         if not self._initialized or not self.bot or not self.chat_id:
             return False
 
         try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode=parse_mode
-            )
+            message_data = {
+                'text': message,
+                'parse_mode': parse_mode,
+                'priority': priority
+            }
+
+            await self._message_queue.put(message_data)
             return True
         except Exception as e:
-            logger.error(f"Failed to send Telegram message: {str(e)}")
+            logger.error(f"Failed to queue Telegram message: {str(e)}")
             return False
 
     async def send_error_notification(self, error_message: str, error_details: dict = None):
@@ -603,6 +726,13 @@ Other:
                 interval=interval
             )
 
+            # Start notifications in the background
+            await self.schedule_straddle_notifications(
+                user_id=user_id,
+                position_id=long_result['transaction_id'],
+                interval=interval
+            )
+
             await update.message.reply_text(
                 f"✅ Straddle position opened:\n"
                 f"Symbol: {symbol}\n"
@@ -612,14 +742,9 @@ Other:
                 f"Long Position ID: {long_result['transaction_id']}\n"
                 f"Short Position ID: {short_result['transaction_id']}\n"
                 f"Total Investment: ${(quantity * strike_price * 2):,.2f}\n"
-                f"Alert Interval: {interval} minutes"
-            )
-
-            # Start automated notifications
-            await self.schedule_straddle_notifications(
-                user_id=user_id,
-                position_id=long_result['transaction_id'],
-                interval=interval
+                f"Alert Interval: {interval} minutes\n\n"
+                f"Use /straddles to view your positions\n"
+                f"Use /close_straddle {long_result['transaction_id']} to close this position"
             )
 
         except ValueError as e:
@@ -824,8 +949,24 @@ Other:
     async def schedule_straddle_notifications(self, user_id: int, position_id: int, interval: int):
         """Schedule automated notifications for a straddle position"""
         try:
-            while True:
-                await self.send_straddle_notification(user_id, position_id)
-                await asyncio.sleep(interval * 60)  # Convert minutes to seconds
+            # Create a background task for notifications
+            asyncio.create_task(self._notification_loop(user_id, position_id, interval))
         except Exception as e:
             logger.error(f"Error in straddle notification scheduler: {str(e)}")
+
+    async def _notification_loop(self, user_id: int, position_id: int, interval: int):
+        """Background task for sending periodic notifications"""
+        try:
+            while True:
+                # Check if position still exists
+                position = await self.portfolio_service.get_straddle_position(user_id, position_id)
+                if not position:
+                    logger.info(f"Straddle position {position_id} no longer exists, stopping notifications")
+                    break
+
+                await self.send_straddle_notification(user_id, position_id)
+                await asyncio.sleep(interval * 60)  # Convert minutes to seconds
+        except asyncio.CancelledError:
+            logger.info(f"Notification loop cancelled for position {position_id}")
+        except Exception as e:
+            logger.error(f"Error in notification loop: {str(e)}")
