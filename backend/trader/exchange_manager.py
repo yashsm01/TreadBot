@@ -1,4 +1,4 @@
-import ccxt
+import ccxt.async_support as ccxt
 import logging
 from typing import Optional, Dict, List
 from ..services.crypto_service import CryptoService
@@ -34,13 +34,16 @@ class ExchangeManager:
         return self.crypto_service.get_all_active_pairs()
 
     async def validate_trading_pair(self, symbol: str) -> bool:
-        """Validate if a trading pair is supported and active"""
-        try:
-            # First check if the pair is in our database of active pairs
-            if not self.crypto_service.validate_trading_pair(symbol):
-                return False
+        """
+        Validate if a trading pair is supported by checking if we can fetch its ticker.
 
-            # Then verify with the exchange API that the pair is tradeable
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT')
+
+        Returns:
+            bool: True if the trading pair is valid and supported, False otherwise
+        """
+        try:
             ticker = await self.exchange.fetch_ticker(symbol)
             return ticker is not None
         except Exception as e:
@@ -79,3 +82,8 @@ class ExchangeManager:
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {symbol}: {str(e)}")
             return None
+
+    async def close(self):
+        """Close the exchange connection"""
+        if self.exchange:
+            await self.exchange.close()

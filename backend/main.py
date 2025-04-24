@@ -19,6 +19,7 @@ from datetime import datetime
 import asyncio
 from .database import get_db, SessionLocal, init_db, check_db_connection
 from .services.portfolio import PortfolioService
+from .api import telegram_debug
 
 # Load environment variables
 load_dotenv()
@@ -465,6 +466,10 @@ async def get_all_market_analysis(
     except Exception as e:
         logger.error(f"Error getting all market analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Register debug routers
+if os.getenv("DEBUG", "false").lower() == "true":
+    app.include_router(telegram_debug.router)
 
 if __name__ == "__main__":
     import uvicorn

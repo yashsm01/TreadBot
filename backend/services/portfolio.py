@@ -85,7 +85,10 @@ class PortfolioService:
 
             for item in portfolio_items:
                 # Get current price
-                ticker = await self.exchange_manager.fetch_ticker(item.symbol)
+                ticker = await self.exchange_manager.get_ticker(item.symbol)
+                if ticker is None:
+                    logger.error(f"Could not get ticker for {item.symbol}")
+                    continue
                 current_price = ticker['last']
 
                 current_value = item.quantity * current_price
