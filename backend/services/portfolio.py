@@ -179,3 +179,78 @@ class PortfolioService:
         except Exception as e:
             logger.error(f"Error getting profit summary: {str(e)}")
             raise
+
+    async def get_straddle_position(self, user_id: int, position_id: int) -> Optional[Dict]:
+        """Get details of a specific straddle position"""
+        try:
+            # Get the long and short transactions for this position
+            long_tx = self.db.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.id == position_id,
+                Transaction.type == 'BUY'
+            ).first()
+
+            if not long_tx:
+                return None
+
+            # Get current market price
+            ticker = await self.exchange_manager.get_ticker(long_tx.symbol)
+            if not ticker:
+                raise ValueError(f"Could not get current price for {long_tx.symbol}")
+
+            current_price = ticker['last']
+
+            return {
+                "position_id": position_id,
+                "symbol": long_tx.symbol,
+                "quantity": long_tx.quantity,
+                "strike_price": long_tx.price,
+                "current_price": current_price,
+                "open_time": long_tx.timestamp.isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error getting straddle position: {str(e)}")
+            return None
+
+    async def get_straddle_positions(self, user_id: int) -> List[Dict]:
+        """Get all active straddle positions for a user"""
+        try:
+            # Get all straddle transactions (matched pairs of BUY and SELL)
+            positions = []
+            transactions = self.db.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.type.in_(['BUY', 'SELL'])
+            ).order_by(Transaction.timestamp.desc()).all()
+
+            # Group transactions by symbol and timestamp to find straddle pairs
+            straddle_pairs = {}
+            for tx in transactions:
+                key = f"{tx.symbol}_{tx.timestamp.strftime('%Y%m%d%H%M%S')}"
+                if key not in straddle_pairs:
+                    straddle_pairs[key] = []
+                straddle_pairs[key].append(tx)
+
+            # Process valid straddle pairs
+            for key, pair in straddle_pairs.items():
+                if len(pair) == 2 and pair[0].type != pair[1].type:
+                    # Get current market price
+                    ticker = await self.exchange_manager.get_ticker(pair[0].symbol)
+                    if not ticker:
+                        continue
+
+                    current_price = ticker['last']
+                    buy_tx = next(tx for tx in pair if tx.type == 'BUY')
+
+                    positions.append({
+                        "position_id": buy_tx.id,
+                        "symbol": buy_tx.symbol,
+                        "quantity": buy_tx.quantity,
+                        "strike_price": buy_tx.price,
+                        "current_price": current_price,
+                        "open_time": buy_tx.timestamp.isoformat()
+                    })
+
+            return positions
+        except Exception as e:
+            logger.error(f"Error getting straddle positions: {str(e)}")
+            return []

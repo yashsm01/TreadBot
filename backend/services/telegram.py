@@ -53,6 +53,11 @@ class TelegramService:
             self.application.add_handler(CommandHandler("history", self.get_history))
             self.application.add_handler(CommandHandler("profit", self.get_profit))
 
+            # Straddle Strategy commands
+            self.application.add_handler(CommandHandler("straddle", self.handle_straddle))
+            self.application.add_handler(CommandHandler("close_straddle", self.handle_close_straddle))
+            self.application.add_handler(CommandHandler("straddles", self.get_straddle_positions))
+
             # Initialize and start polling in the background
             await self.application.initialize()
             await self.application.start()
@@ -272,6 +277,11 @@ Portfolio:
 /portfolio - View your current portfolio
 /history [symbol] - View transaction history (optional: filter by symbol)
 /profit [timeframe] - View profit summary (timeframe: daily/weekly/monthly/all)
+
+Straddle Strategy:
+/straddle <symbol> <quantity> <strike_price> - Open a new straddle position
+/close_straddle <position_id> - Close an existing straddle position
+/straddles - View all active straddle positions
 
 Other:
 /start - Start the bot
@@ -542,3 +552,156 @@ Other:
         except Exception as e:
             logger.error(f"Error handling profit command: {str(e)}")
             await update.message.reply_text("❌ An error occurred while retrieving profit summary.")
+
+    async def handle_straddle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /straddle command to open a new straddle position"""
+        try:
+            if not context.args or len(context.args) != 3:
+                await update.message.reply_text(
+                    "Invalid format. Use: /straddle <symbol> <quantity> <strike_price>\n"
+                    "Example: /straddle BTC/USDT 0.1 50000"
+                )
+                return
+
+            symbol = context.args[0].upper()
+            quantity = float(context.args[1])
+            strike_price = float(context.args[2])
+            user_id = update.effective_user.id
+
+            # Get current market price for validation
+            analysis = await self.market_analyzer.get_market_analysis(symbol, "5m")
+            if not analysis or 'market_summary' not in analysis:
+                await update.message.reply_text(f"Could not get market data for {symbol}")
+                return
+
+            current_price = analysis['market_summary']['last_price']
+
+            # Create long and short positions for the straddle
+            long_result = await self.portfolio_service.add_transaction(
+                user_id=user_id,
+                symbol=symbol,
+                type="BUY",
+                quantity=quantity,
+                price=strike_price
+            )
+
+            short_result = await self.portfolio_service.add_transaction(
+                user_id=user_id,
+                symbol=symbol,
+                type="SELL",
+                quantity=quantity,
+                price=strike_price
+            )
+
+            await update.message.reply_text(
+                f"✅ Straddle position opened:\n"
+                f"Symbol: {symbol}\n"
+                f"Quantity: {quantity}\n"
+                f"Strike Price: ${strike_price:,.2f}\n"
+                f"Current Price: ${current_price:,.2f}\n"
+                f"Long Position ID: {long_result['transaction_id']}\n"
+                f"Short Position ID: {short_result['transaction_id']}\n"
+                f"Total Investment: ${(quantity * strike_price * 2):,.2f}"
+            )
+
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling straddle command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while creating the straddle position.")
+
+    async def handle_close_straddle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /close_straddle command to close an existing straddle position"""
+        try:
+            if not context.args or len(context.args) != 1:
+                await update.message.reply_text(
+                    "Invalid format. Use: /close_straddle <position_id>\n"
+                    "Example: /close_straddle 123"
+                )
+                return
+
+            position_id = int(context.args[0])
+            user_id = update.effective_user.id
+
+            # Get position details and close both legs
+            position = await self.portfolio_service.get_straddle_position(user_id, position_id)
+            if not position:
+                await update.message.reply_text(f"Straddle position {position_id} not found")
+                return
+
+            # Close both long and short positions
+            close_long = await self.portfolio_service.add_transaction(
+                user_id=user_id,
+                symbol=position['symbol'],
+                type="SELL",
+                quantity=position['quantity'],
+                price=position['current_price']
+            )
+
+            close_short = await self.portfolio_service.add_transaction(
+                user_id=user_id,
+                symbol=position['symbol'],
+                type="BUY",
+                quantity=position['quantity'],
+                price=position['current_price']
+            )
+
+            # Calculate P/L
+            long_pl = (position['current_price'] - position['strike_price']) * position['quantity']
+            short_pl = (position['strike_price'] - position['current_price']) * position['quantity']
+            total_pl = long_pl + short_pl
+
+            await update.message.reply_text(
+                f"✅ Straddle position closed:\n"
+                f"Position ID: {position_id}\n"
+                f"Symbol: {position['symbol']}\n"
+                f"Quantity: {position['quantity']}\n"
+                f"Strike Price: ${position['strike_price']:,.2f}\n"
+                f"Close Price: ${position['current_price']:,.2f}\n"
+                f"Long P/L: ${long_pl:,.2f}\n"
+                f"Short P/L: ${short_pl:,.2f}\n"
+                f"Total P/L: ${total_pl:,.2f}"
+            )
+
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling close_straddle command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while closing the straddle position.")
+
+    async def get_straddle_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /straddles command to view all active straddle positions"""
+        try:
+            user_id = update.effective_user.id
+            positions = await self.portfolio_service.get_straddle_positions(user_id)
+
+            if not positions:
+                await update.message.reply_text("You have no active straddle positions.")
+                return
+
+            positions_text = "🔄 Active Straddle Positions:\n\n"
+            total_pl = 0
+
+            for pos in positions:
+                # Calculate current P/L for both legs
+                long_pl = (pos['current_price'] - pos['strike_price']) * pos['quantity']
+                short_pl = (pos['strike_price'] - pos['current_price']) * pos['quantity']
+                position_pl = long_pl + short_pl
+                total_pl += position_pl
+
+                positions_text += (
+                    f"ID: {pos['position_id']}\n"
+                    f"Symbol: {pos['symbol']}\n"
+                    f"Quantity: {pos['quantity']:.8f}\n"
+                    f"Strike: ${pos['strike_price']:,.2f}\n"
+                    f"Current: ${pos['current_price']:,.2f}\n"
+                    f"P/L: ${position_pl:,.2f}\n"
+                    f"Opened: {pos['open_time']}\n\n"
+                )
+
+            positions_text += f"Total P/L Across All Positions: ${total_pl:,.2f}"
+            await update.message.reply_text(positions_text)
+
+        except Exception as e:
+            logger.error(f"Error handling straddles command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while retrieving straddle positions.")
