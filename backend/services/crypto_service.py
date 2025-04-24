@@ -84,22 +84,46 @@ class CryptoService:
             ).all()
             return [crypto.symbol for crypto in cryptos]
         except Exception as e:
-            logger.error(f"Error getting active pairs: {str(e)}")
+            logger.error(f"Error fetching active pairs: {str(e)}")
             return []
 
     def get_crypto_by_symbol(self, symbol: str) -> Optional[Cryptocurrency]:
         """Get cryptocurrency by symbol"""
         try:
             return self.db.query(Cryptocurrency).filter(
-                Cryptocurrency.symbol == symbol,
-                Cryptocurrency.is_active == True
+                Cryptocurrency.symbol == symbol
             ).first()
         except Exception as e:
-            logger.error(f"Error getting crypto by symbol {symbol}: {str(e)}")
+            logger.error(f"Error fetching crypto by symbol {symbol}: {str(e)}")
             return None
 
+    def get_all_cryptos(self, active_only: bool = False) -> List[Cryptocurrency]:
+        """Get all cryptocurrencies"""
+        try:
+            query = self.db.query(Cryptocurrency)
+            if active_only:
+                query = query.filter(Cryptocurrency.is_active == True)
+            return query.all()
+        except Exception as e:
+            logger.error(f"Error fetching all cryptos: {str(e)}")
+            return []
+
+    def update_crypto_status(self, symbol: str, is_active: bool) -> bool:
+        """Update cryptocurrency active status"""
+        try:
+            crypto = self.get_crypto_by_symbol(symbol)
+            if crypto:
+                crypto.is_active = is_active
+                self.db.commit()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error updating crypto status for {symbol}: {str(e)}")
+            self.db.rollback()
+            return False
+
     def validate_trading_pair(self, symbol: str) -> bool:
-        """Validate if a trading pair exists and is active"""
+        """Validate if trading pair exists and is active"""
         crypto = self.get_crypto_by_symbol(symbol)
         return crypto is not None and crypto.is_active
 

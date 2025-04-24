@@ -12,9 +12,20 @@ sys.path.append(project_root)
 # Load environment variables
 load_dotenv()
 
-# Verify required environment variables
+# Configure logging
+logging.basicConfig(
+    level=os.getenv('LOG_LEVEL', 'INFO'),
+    format=os.getenv('LOG_FORMAT', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+)
+logger = logging.getLogger(__name__)
+
+# Required environment variables
 required_vars = [
-    "DATABASE_URL",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
     "HOST",
     "PORT",
     "LOG_LEVEL",
@@ -27,51 +38,23 @@ required_vars = [
     "PAPER_TRADING",
     "TRADING_PAIRS",
     "DEFAULT_TRADING_PAIR",
-    "ALLOWED_ORIGINS"
+    "ALLOWED_ORIGINS",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID"
 ]
 
-missing_vars = [var for var in required_vars if not os.getenv(var)]
-if missing_vars:
-    raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-
-from backend.db.models import Base, get_db_engine
-from sqlalchemy.orm import sessionmaker
-
-# Configure logging
-logging.basicConfig(
-    level=os.getenv('LOG_LEVEL', 'INFO'),
-    format=os.getenv('LOG_FORMAT', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-)
-logger = logging.getLogger(__name__)
-
-def setup_database():
-    """Initialize database and create tables"""
-    try:
-        # Get database URL
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            raise ValueError("DATABASE_URL not found in environment variables")
-
-        # Create database engine
-        engine = get_db_engine()
-
-        # Create tables
-        Base.metadata.create_all(engine)
-
-        # Create session factory
-        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-        logger.info("Database setup completed successfully")
-        return SessionLocal
-    except Exception as e:
-        logger.error(f"Error setting up database: {str(e)}")
+def check_environment():
+    """Check if all required environment variables are set"""
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
         sys.exit(1)
 
 def main():
     """Main function to run the application"""
     try:
-        # Setup database
-        SessionLocal = setup_database()
+        # Check environment variables
+        check_environment()
 
         # Start the application
         uvicorn.run(
@@ -79,7 +62,7 @@ def main():
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", 8000)),
             reload=True,
-            log_level="info"
+            log_level=os.getenv("LOG_LEVEL", "info").lower()
         )
     except Exception as e:
         logger.error(f"Error running application: {str(e)}")

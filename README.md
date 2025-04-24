@@ -44,7 +44,7 @@ pip install -r requirements.txt
 
 ```env
 # Database Configuration
-DATABASE_URL=postgresql://user:password@localhost:5432/crypto_trading
+DATABASE_URL=postgresql://postgres:1234@localhost:5432/crypto_trading
 
 # Binance API Configuration
 BINANCE_API_KEY=your_api_key_here

@@ -4,6 +4,7 @@ from sqlalchemy.sql import func
 import enum
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -13,43 +14,45 @@ Base = declarative_base()
 
 # Enum for trade status
 class TradeStatus(enum.Enum):
-    OPEN = "open"
-    CLOSED = "closed"
-    CANCELLED = "cancelled"
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
 
 # Enum for trade type (real or paper trading)
 class TradeType(enum.Enum):
-    REAL = "real"
-    PAPER = "paper"
+    REAL = "REAL"
+    PAPER = "PAPER"
+
+# Enum for position type
+class PositionType(enum.Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
 
 # Trade model for storing trade information
 class Trade(Base):
     __tablename__ = "trades"
 
-    id = Column(Integer, primary_key=True, index=True)
-    coin = Column(String, index=True)  # Trading pair (e.g., BTC/USDT)
-    entry_price = Column(Float)  # Entry price of the trade
-    exit_price = Column(Float, nullable=True)  # Exit price (if closed)
-    profit_pct = Column(Float, nullable=True)  # Profit/loss percentage
-    quantity = Column(Float)  # Trade quantity
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    status = Column(Enum(TradeStatus), default=TradeStatus.OPEN)
-    type = Column(Enum(TradeType), default=TradeType.REAL)
+    id = Column(Integer, primary_key=True)
+    coin = Column(String, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    exit_price = Column(Float)
+    profit_pct = Column(Float)
+    quantity = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    status = Column(Enum(TradeStatus), nullable=False, default=TradeStatus.OPEN)
+    type = Column(Enum(TradeType), nullable=False, default=TradeType.PAPER)
+    position = Column(Enum(PositionType), nullable=False, default=PositionType.LONG)
 
 # Configuration model for storing trading parameters
 class Config(Base):
     __tablename__ = "config"
 
-    id = Column(Integer, primary_key=True, index=True)
-    coin = Column(String, unique=True, index=True)  # Trading pair
-    interval = Column(String)  # Trading interval (e.g., "5m", "15m", "1h")
-    breakout_pct = Column(Float)  # Breakout percentage
-    tp_pct = Column(Float)  # Take profit percentage
-    sl_pct = Column(Float)  # Stop loss percentage
-    quantity = Column(Float)  # Trade quantity
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    id = Column(Integer, primary_key=True)
+    key = Column(String, unique=True, nullable=False)
+    value = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 # Database connection function using environment variable
 def get_db_engine():

@@ -1,309 +1,164 @@
 import logging
-from typing import Dict, List, Optional
-from ..services.crypto_service import CryptoService
+from typing import List, Dict, Optional
+from ..trader.exchange_manager import ExchangeManager
 import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-import ccxt
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 class MarketAnalyzer:
-    def __init__(self, crypto_service: CryptoService):
-        self.crypto_service = crypto_service
-        self.exchange = ccxt.binance()
-        self.timeframes = ['5m', '10m', '15m']
-        self._update_supported_pairs()
-        self.volatility_threshold = 0.02  # 2% threshold for volatility
-        self.time_windows = {
-            "5m": 12,    # 1 hour divided into 5-minute intervals
-            "10m": 6,    # 1 hour divided into 10-minute intervals
-            "15m": 4     # 1 hour divided into 15-minute intervals
+    def __init__(self, exchange_manager: ExchangeManager):
+        """Initialize MarketAnalyzer with exchange manager"""
+        self.exchange_manager = exchange_manager
+        self.supported_pairs = []
+        self.timeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+
+    async def initialize(self):
+        """Initialize the market analyzer"""
+        await self._update_supported_pairs()
+
+    async def _update_supported_pairs(self):
+        """Update the list of supported trading pairs"""
+        try:
+            self.supported_pairs = self.exchange_manager.get_all_active_pairs()
+            logger.info(f"Updated supported pairs: {len(self.supported_pairs)} pairs found")
+        except Exception as e:
+            logger.error(f"Error updating supported pairs: {str(e)}")
+            self.supported_pairs = []
+
+    def get_supported_pairs(self) -> List[str]:
+        """Get list of supported trading pairs"""
+        return self.supported_pairs
+
+    async def get_market_analysis(self, symbol: str, timeframe: str = '5m') -> Dict:
+        """Get comprehensive market analysis for a symbol"""
+        if not await self.exchange_manager.validate_trading_pair(symbol):
+            raise ValueError(f"Invalid trading pair: {symbol}")
+
+        if timeframe not in self.timeframes:
+            raise ValueError(f"Invalid timeframe. Supported timeframes: {', '.join(self.timeframes)}")
+
+        # Get market data
+        volatility = await self.analyze_volatility(symbol, timeframe)
+        market_summary = await self.get_market_summary(symbol)
+        signals = await self.get_trading_signals(symbol, timeframe)
+
+        if not all([volatility, market_summary, signals]):
+            raise ValueError(f"Failed to get complete market analysis for {symbol}")
+
+        return {
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'volatility_metrics': volatility,
+            'market_summary': market_summary,
+            'trading_signals': signals,
+            'timestamp': datetime.now().isoformat()
         }
 
-    def _update_supported_pairs(self):
-        """Update supported pairs from database"""
-        self.supported_pairs = self.crypto_service.get_all_active_pairs()
-
-    async def get_market_analysis(self, symbol: str, timeframe: str) -> Dict:
-        """Get market analysis for a symbol"""
+    async def analyze_volatility(self, symbol: str, timeframe: str = '1h', periods: int = 24) -> Optional[Dict]:
+        """Analyze price volatility for a trading pair"""
         try:
-            # Validate inputs
-            if not self.crypto_service.validate_trading_pair(symbol):
-                raise ValueError(f"Invalid trading pair: {symbol}")
-            if timeframe not in self.timeframes:
-                raise ValueError(f"Invalid timeframe: {timeframe}")
+            if not await self.exchange_manager.validate_trading_pair(symbol):
+                logger.warning(f"Invalid trading pair: {symbol}")
+                return None
 
-            # Get historical data
-            historical_data = await self._get_historical_data(symbol, timeframe)
+            ohlcv = await self.exchange_manager.get_ohlcv(symbol, timeframe, periods)
+            if not ohlcv or len(ohlcv) < 2:
+                return None
 
-            # Calculate current price
-            current_price = float(self.exchange.fetch_ticker(symbol.replace('/', ''))['last'])
+            # Convert to numpy array for calculations
+            prices = np.array([candle[4] for candle in ohlcv])  # Close prices
 
-            # Calculate indicators
-            indicators = self._calculate_indicators(historical_data)
+            # Calculate metrics
+            returns = np.diff(np.log(prices))
+            volatility = np.std(returns) * np.sqrt(periods)
+            avg_price = np.mean(prices)
+            price_range = (np.max(prices) - np.min(prices)) / avg_price
 
-            # Generate signals
-            signals = self._generate_signals(indicators)
+            return {
+                'symbol': symbol,
+                'volatility': float(volatility),
+                'avg_price': float(avg_price),
+                'price_range': float(price_range),
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing volatility for {symbol}: {str(e)}")
+            return None
 
-            # Calculate support and resistance
-            support_resistance = self._calculate_support_resistance(historical_data)
+    async def get_market_summary(self, symbol: str) -> Optional[Dict]:
+        """Get market summary for a trading pair"""
+        try:
+            if not await self.exchange_manager.validate_trading_pair(symbol):
+                logger.warning(f"Invalid trading pair: {symbol}")
+                return None
 
-            # Calculate volatility
-            volatility = self._calculate_volatility(historical_data)
+            ticker = await self.exchange_manager.get_ticker(symbol)
+            if not ticker:
+                return None
 
-            # Generate recommendation
-            recommendation = self._generate_recommendation(
-                current_price,
-                indicators,
-                signals,
-                support_resistance,
-                volatility
-            )
+            # Get recent OHLCV data
+            ohlcv = await self.exchange_manager.get_ohlcv(symbol, '1h', 24)
+            if not ohlcv or len(ohlcv) < 24:
+                return None
+
+            # Calculate 24h metrics
+            prices = np.array([candle[4] for candle in ohlcv])
+            volume = np.array([candle[5] for candle in ohlcv])
+
+            return {
+                'symbol': symbol,
+                'last_price': ticker['last'],
+                'bid': ticker['bid'],
+                'ask': ticker['ask'],
+                'volume_24h': float(np.sum(volume)),
+                'price_change_24h': float((prices[-1] - prices[0]) / prices[0] * 100),
+                'high_24h': float(np.max(prices)),
+                'low_24h': float(np.min(prices)),
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error getting market summary for {symbol}: {str(e)}")
+            return None
+
+    async def get_trading_signals(self, symbol: str, timeframe: str = '1h') -> Optional[Dict]:
+        """Get trading signals for a symbol"""
+        try:
+            if not await self.exchange_manager.validate_trading_pair(symbol):
+                logger.warning(f"Invalid trading pair: {symbol}")
+                return None
+
+            # Get market data
+            ohlcv = await self.exchange_manager.get_ohlcv(symbol, timeframe, 100)
+            if not ohlcv or len(ohlcv) < 100:
+                return None
+
+            # Calculate technical indicators
+            prices = np.array([candle[4] for candle in ohlcv])
+            volumes = np.array([candle[5] for candle in ohlcv])
+
+            # Simple moving averages
+            sma20 = np.mean(prices[-20:])
+            sma50 = np.mean(prices[-50:])
+
+            # Volume analysis
+            avg_volume = np.mean(volumes[-20:])
+            current_volume = volumes[-1]
+
+            # Price momentum
+            momentum = (prices[-1] - prices[-20]) / prices[-20] * 100
 
             return {
                 'symbol': symbol,
                 'timeframe': timeframe,
-                'current_price': current_price,
-                'indicators': indicators,
-                'signals': signals,
-                'support_resistance': support_resistance,
-                'volatility': volatility,
-                'recommendation': recommendation
+                'current_price': float(prices[-1]),
+                'sma20': float(sma20),
+                'sma50': float(sma50),
+                'momentum': float(momentum),
+                'volume_ratio': float(current_volume / avg_volume),
+                'trend': 'bullish' if sma20 > sma50 else 'bearish',
+                'timestamp': datetime.now().isoformat()
             }
-
         except Exception as e:
-            logger.error(f"Error in market analysis for {symbol}: {str(e)}")
-            raise
-
-    async def _get_historical_data(self, symbol: str, timeframe: str) -> pd.DataFrame:
-        """Get historical price data"""
-        try:
-            # Convert timeframe to valid exchange timeframe
-            exchange_timeframe = self._convert_timeframe(timeframe)
-
-            # Fetch OHLCV data
-            ohlcv = self.exchange.fetch_ohlcv(
-                symbol.replace('/', ''),
-                timeframe=exchange_timeframe,
-                limit=100  # Last 100 candles
-            )
-
-            # Convert to DataFrame
-            df = pd.DataFrame(
-                ohlcv,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            )
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-
-            return df
-
-        except Exception as e:
-            logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
-            raise
-
-    def _convert_timeframe(self, timeframe: str) -> str:
-        """Convert internal timeframe to exchange timeframe"""
-        return timeframe  # For Binance, our timeframes are already compatible
-
-    def _calculate_indicators(self, df: pd.DataFrame) -> Dict:
-        """Calculate technical indicators"""
-        try:
-            close_prices = df['close'].values
-
-            # Calculate SMA
-            sma20 = self._calculate_sma(close_prices, 20)
-            sma50 = self._calculate_sma(close_prices, 50)
-
-            # Calculate RSI
-            rsi = self._calculate_rsi(close_prices)
-
-            # Calculate Bollinger Bands
-            bb_middle, bb_upper, bb_lower = self._calculate_bollinger_bands(close_prices)
-
-            return {
-                'sma20': float(sma20[-1]),
-                'sma50': float(sma50[-1]),
-                'rsi': float(rsi[-1]),
-                'bb_middle': float(bb_middle[-1]),
-                'bb_upper': float(bb_upper[-1]),
-                'bb_lower': float(bb_lower[-1])
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating indicators: {str(e)}")
-            raise
-
-    def _calculate_sma(self, data: np.ndarray, period: int) -> np.ndarray:
-        """Calculate Simple Moving Average"""
-        return pd.Series(data).rolling(window=period).mean().values
-
-    def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> np.ndarray:
-        """Calculate Relative Strength Index"""
-        deltas = np.diff(prices)
-        seed = deltas[:period+1]
-        up = seed[seed >= 0].sum()/period
-        down = -seed[seed < 0].sum()/period
-        rs = up/down
-        rsi = np.zeros_like(prices)
-        rsi[:period] = 100. - 100./(1. + rs)
-
-        for i in range(period, len(prices)):
-            delta = deltas[i - 1]
-            if delta > 0:
-                upval = delta
-                downval = 0.
-            else:
-                upval = 0.
-                downval = -delta
-
-            up = (up * (period - 1) + upval) / period
-            down = (down * (period - 1) + downval) / period
-            rs = up/down
-            rsi[i] = 100. - 100./(1. + rs)
-
-        return rsi
-
-    def _calculate_bollinger_bands(self, prices: np.ndarray, period: int = 20, num_std: float = 2.0) -> tuple:
-        """Calculate Bollinger Bands"""
-        middle_band = self._calculate_sma(prices, period)
-        std = pd.Series(prices).rolling(window=period).std().values
-        upper_band = middle_band + (std * num_std)
-        lower_band = middle_band - (std * num_std)
-        return middle_band, upper_band, lower_band
-
-    def _calculate_volatility(self, df: pd.DataFrame) -> Dict:
-        """Calculate volatility metrics"""
-        try:
-            # Calculate daily returns
-            returns = df['close'].pct_change()
-
-            # Current volatility (last 20 periods)
-            current_volatility = returns.tail(20).std()
-
-            # Historical volatility (all available periods)
-            historical_volatility = returns.std()
-
-            return {
-                'current_volatility': float(current_volatility),
-                'historical_volatility': float(historical_volatility)
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating volatility: {str(e)}")
-            raise
-
-    def _calculate_support_resistance(self, df: pd.DataFrame) -> Dict:
-        """Calculate support and resistance levels"""
-        try:
-            # Use recent price action (last 50 periods)
-            recent_high = df['high'].tail(50).max()
-            recent_low = df['low'].tail(50).min()
-
-            # Calculate potential support levels
-            support_levels = [
-                recent_low,
-                recent_low * 0.99,  # 1% below recent low
-                recent_low * 0.98   # 2% below recent low
-            ]
-
-            # Calculate potential resistance levels
-            resistance_levels = [
-                recent_high,
-                recent_high * 1.01,  # 1% above recent high
-                recent_high * 1.02   # 2% above recent high
-            ]
-
-            return {
-                'support_levels': [float(level) for level in support_levels],
-                'resistance_levels': [float(level) for level in resistance_levels]
-            }
-
-        except Exception as e:
-            logger.error(f"Error calculating support/resistance: {str(e)}")
-            raise
-
-    def _generate_signals(self, indicators: Dict) -> Dict:
-        """Generate trading signals based on indicators"""
-        try:
-            # Determine trend based on SMAs
-            trend = "bullish" if indicators['sma20'] > indicators['sma50'] else "bearish"
-
-            # RSI signals
-            rsi_signal = "oversold" if indicators['rsi'] < 30 else "overbought" if indicators['rsi'] > 70 else "neutral"
-
-            # Bollinger Bands signals
-            bb_signal = "lower_band" if indicators['bb_lower'] > indicators['bb_middle'] else "upper_band" if indicators['bb_upper'] < indicators['bb_middle'] else "middle_band"
-
-            return {
-                'trend': trend,
-                'rsi_signal': rsi_signal,
-                'bb_signal': bb_signal
-            }
-
-        except Exception as e:
-            logger.error(f"Error generating signals: {str(e)}")
-            raise
-
-    def _generate_recommendation(
-        self,
-        current_price: float,
-        indicators: Dict,
-        signals: Dict,
-        support_resistance: Dict,
-        volatility: Dict
-    ) -> Dict:
-        """Generate trading recommendation"""
-        try:
-            action = "hold"
-            confidence = 0.5
-            reason = "Market conditions are neutral"
-            stop_loss = None
-            target_price = None
-
-            # Check for oversold conditions (potential buy)
-            if (signals['rsi_signal'] == "oversold" and
-                current_price <= indicators['bb_lower']):
-                action = "buy"
-                confidence = 0.8
-                reason = "RSI oversold + price at BB lower band"
-                stop_loss = current_price * 0.98  # 2% below entry
-                target_price = current_price * 1.05  # 5% profit target
-
-            # Check for overbought conditions (potential sell)
-            elif (signals['rsi_signal'] == "overbought" and
-                  current_price >= indicators['bb_upper']):
-                action = "sell"
-                confidence = 0.8
-                reason = "RSI overbought + price at BB upper band"
-                stop_loss = current_price * 1.02  # 2% above entry
-                target_price = current_price * 0.95  # 5% profit target
-
-            # Consider trend
-            if signals['trend'] == "bullish":
-                if action == "buy":
-                    confidence += 0.1
-                elif action == "sell":
-                    confidence -= 0.1
-            else:  # bearish trend
-                if action == "sell":
-                    confidence += 0.1
-                elif action == "buy":
-                    confidence -= 0.1
-
-            # Adjust for volatility
-            if volatility['current_volatility'] > volatility['historical_volatility']:
-                confidence *= 0.9  # Reduce confidence in high volatility
-
-            return {
-                'action': action,
-                'confidence': min(confidence, 1.0),  # Cap at 1.0
-                'reason': reason,
-                'stop_loss': float(stop_loss) if stop_loss else None,
-                'target_price': float(target_price) if target_price else None
-            }
-
-        except Exception as e:
-            logger.error(f"Error generating recommendation: {str(e)}")
-            raise
+            logger.error(f"Error getting trading signals for {symbol}: {str(e)}")
+            return None

@@ -8,21 +8,22 @@ from dotenv import load_dotenv
 import os
 import logging
 from sqlalchemy.orm import Session
-from sqlalchemy.orm import sessionmaker
-from .trader.ccxt_utils import ExchangeManager
+from .trader.exchange_manager import ExchangeManager
 from .trader.mock_exchange import MockExchange
 from .services.telegram import TelegramService
 from .services.scheduler import TradingScheduler
-from .db.models import Trade, Config, TradeStatus, TradeType, get_db_engine
+from .db.models import Trade, Config, TradeStatus, TradeType
 from .api.trading import TradingAPI
 from .analysis.market_analyzer import MarketAnalyzer
 from datetime import datetime
 import asyncio
+from .database import get_db, SessionLocal, init_db, check_db_connection
+from .services.portfolio import PortfolioService
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Configure logging based on environment variables
+# Configure logging
 logging.basicConfig(
     level=os.getenv('LOG_LEVEL', 'INFO'),
     format=os.getenv('LOG_FORMAT', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -47,31 +48,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize components
-try:
-    exchange_manager = ExchangeManager()
-    logger.info("Real exchange connection established")
-except Exception as e:
-    logger.warning(f"Real exchange not available, using mock exchange: {str(e)}")
-    exchange_manager = MockExchange()
-    logger.info("Mock exchange initialized")
-
-# Initialize market analyzer
-market_analyzer = MarketAnalyzer(exchange_manager)
-
-# Initialize Telegram service
-telegram_service = TelegramService()
-
-# Initialize trading scheduler
-trading_scheduler = TradingScheduler()
-
-# Database session dependency
-def get_db():
-    db = Session(get_db_engine())
-    try:
-        yield db
-    finally:
-        db.close()
+# Service instances (will be initialized during startup)
+exchange_manager = None
+market_analyzer = None
+portfolio_service = None
+telegram_service = None
+trading_scheduler = None
 
 # Pydantic models for API requests/responses
 class TradeResponse(BaseModel):
@@ -111,6 +93,76 @@ class ManualTradeRequest(BaseModel):
     tp_pct: float
     sl_pct: float
 
+# Startup and shutdown events
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    global exchange_manager, market_analyzer, portfolio_service, telegram_service, trading_scheduler
+
+    try:
+        # Check database connection
+        if not check_db_connection():
+            raise Exception("Could not connect to database")
+
+        # Initialize database
+        init_db()
+        logger.info("Database initialized successfully")
+
+        # Get database session
+        db = SessionLocal()
+
+        try:
+            # Initialize exchange
+            try:
+                exchange_manager = ExchangeManager(db)
+                logger.info("Real exchange connection established")
+            except Exception as e:
+                logger.warning(f"Real exchange not available, using mock exchange: {str(e)}")
+                exchange_manager = MockExchange()
+                logger.info("Mock exchange initialized")
+
+            # Initialize market analyzer
+            market_analyzer = MarketAnalyzer(exchange_manager)
+            await market_analyzer.initialize()
+
+            # Initialize portfolio service
+            portfolio_service = PortfolioService(db, exchange_manager)
+
+            # Initialize Telegram service
+            telegram_service = TelegramService(market_analyzer, portfolio_service)
+            await telegram_service.initialize()
+
+            # Initialize trading scheduler
+            trading_scheduler = TradingScheduler(telegram_service)
+            trading_scheduler.start()
+
+            logger.info("All services initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing services: {str(e)}")
+            raise
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"Startup failed: {str(e)}")
+        raise
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    try:
+        if trading_scheduler:
+            trading_scheduler.stop()
+            logger.info("Trading scheduler stopped")
+
+        if telegram_service:
+            await telegram_service.stop()
+            logger.info("Telegram service stopped")
+
+        logger.info("All services shut down successfully")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {str(e)}")
+
 # Custom Swagger UI endpoint
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
@@ -134,12 +186,10 @@ async def get_openapi_endpoint():
 # Health check endpoint
 @app.get("/status", response_model=Dict)
 async def health_check():
-    """
-    Get the current status of the trading bot.
+    """Get the current status of the trading bot"""
+    if not exchange_manager:
+        raise HTTPException(status_code=503, detail="Services not initialized")
 
-    Returns:
-        Dict: Status information including exchange type, paper trading mode, and trading pairs.
-    """
     return {
         "status": "healthy",
         "version": "1.0.0",
@@ -248,34 +298,6 @@ async def manual_trade(
     trading_api = TradingAPI(db, exchange_manager, telegram_service)
     created_trade = await trading_api.manual_trade(trade)
     return created_trade.__dict__
-
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    try:
-        # Start trading scheduler
-        trading_scheduler.start()
-        logger.info("Trading scheduler started")
-
-        # Initialize and start Telegram bot
-        await telegram_service.initialize(market_analyzer, exchange_manager)
-        logger.info("Telegram bot initialized")
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-        raise  # Re-raise the exception to prevent the app from starting with broken components
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    try:
-        # Stop trading scheduler
-        trading_scheduler.stop()
-        logger.info("Trading scheduler stopped")
-
-        # Stop Telegram bot
-        await telegram_service.stop()
-        logger.info("Telegram bot stopped")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {str(e)}")
 
 # Test Telegram notifications
 @app.post("/test/telegram", response_model=Dict)

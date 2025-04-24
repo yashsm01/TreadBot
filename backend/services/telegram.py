@@ -1,547 +1,544 @@
 import logging
-import aiohttp
-from typing import Dict, Optional, Tuple
 import os
-from dotenv import load_dotenv
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, ContextTypes
 from ..analysis.market_analyzer import MarketAnalyzer
-from ..trader.ccxt_utils import ExchangeManager
+from ..trader.exchange_manager import ExchangeManager
 import asyncio
-from datetime import datetime, timedelta
-import json
-import re
+from ..services.portfolio import PortfolioService
 
 logger = logging.getLogger(__name__)
 
-# Command states
-SETUP_SYMBOL, SETUP_TIMEFRAME, SETUP_AMOUNT = range(3)
-
 class TelegramService:
-    def __init__(self):
-        load_dotenv()
-        self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
-        self.session = None
-        self.market_analyzer = None
+    def __init__(self, market_analyzer: MarketAnalyzer, portfolio_service: PortfolioService):
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN")
+        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        self.market_analyzer = market_analyzer
         self.exchange_manager = None
-        self.user_settings = {}  # Store user settings
-        self.user_trades = {}    # Store user trade info
-        self.user_states = {}    # Store user conversation states
-        self.notification_tasks = {}  # Store notification tasks
-        self._polling_task = None
+        self.application = None
+        self.bot = None
+        self.portfolio_service = portfolio_service
+        self._initialized = False
 
-    async def initialize(self, market_analyzer: MarketAnalyzer, exchange_manager: ExchangeManager):
-        """Initialize the Telegram bot with required dependencies"""
+    async def initialize(self):
+        """Initialize the Telegram bot and set up command handlers"""
+        if self._initialized:
+            return
+
         try:
-            self.market_analyzer = market_analyzer
-            self.exchange_manager = exchange_manager
-
-            if not self.bot_token:
-                logger.error("TELEGRAM_BOT_TOKEN not found in environment variables")
+            if not self.token or not self.chat_id:
+                logger.warning("Telegram bot token or chat ID not set. Telegram notifications will be disabled.")
                 return
 
-            # Create aiohttp session
-            self.session = aiohttp.ClientSession()
+            # Initialize bot first
+            self.bot = Bot(token=self.token)
 
-            # Test the connection
-            me = await self._make_request("getMe")
-            if me and me.get("ok"):
-                logger.info(f"Connected to Telegram as {me.get('result', {}).get('username')}")
-            else:
-                logger.error("Failed to connect to Telegram")
-                return
+            # Build application
+            self.application = Application.builder().token(self.token).build()
 
-            # Start polling in background
-            self._polling_task = asyncio.create_task(self._start_polling())
+            # Add command handlers
+            self.application.add_handler(CommandHandler("start", self._handle_start))
+            self.application.add_handler(CommandHandler("stop", self._handle_stop))
+            self.application.add_handler(CommandHandler("update", self._handle_update_command))
+            self.application.add_handler(CommandHandler("status", self._handle_status))
+            self.application.add_handler(CommandHandler("pairs", self.get_pairs))
+            self.application.add_handler(CommandHandler("analysis", self.get_analysis))
+            self.application.add_handler(CommandHandler("signals", self.get_signals))
+            self.application.add_handler(CommandHandler("help", self.help))
+
+            # Portfolio commands
+            self.application.add_handler(CommandHandler("buy", self.handle_buy))
+            self.application.add_handler(CommandHandler("sell", self.handle_sell))
+            self.application.add_handler(CommandHandler("portfolio", self.get_portfolio))
+            self.application.add_handler(CommandHandler("history", self.get_history))
+            self.application.add_handler(CommandHandler("profit", self.get_profit))
+
+            # Initialize and start polling in the background
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+            self._initialized = True
             logger.info("Telegram bot started successfully")
 
+            # Send startup notification
+            await self.send_message("🤖 Trading Bot is now online and ready!")
         except Exception as e:
             logger.error(f"Error initializing Telegram bot: {str(e)}")
-            raise
+            self._initialized = False
+            # Don't raise the exception - allow the application to continue without Telegram
 
     async def stop(self):
-        """Stop the Telegram bot"""
+        """Stop the Telegram service"""
+        if not self._initialized:
+            return
+
         try:
-            # Cancel polling task
-            if self._polling_task:
-                self._polling_task.cancel()
-                try:
-                    await self._polling_task
-                except asyncio.CancelledError:
-                    pass
-
-            # Close session
-            if self.session:
-                await self.session.close()
-
-            # Cancel all notification tasks
-            for task in self.notification_tasks.values():
-                task.cancel()
-
-            self.notification_tasks.clear()
-
+            if self.application:
+                await self.send_message("🔴 Trading Bot is shutting down...")
+                await self.application.stop()
+                await self.application.shutdown()
+                self._initialized = False
+                logger.info("Telegram bot stopped successfully")
         except Exception as e:
             logger.error(f"Error stopping Telegram bot: {str(e)}")
 
-    async def _make_request(self, method: str, params: Optional[Dict] = None) -> Dict:
-        """Make a request to the Telegram Bot API"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
+    async def send_message(self, message: str, parse_mode: str = None) -> bool:
+        """Base method for sending messages"""
+        if not self._initialized or not self.bot or not self.chat_id:
+            return False
 
-        url = f"{self.base_url}/{method}"
         try:
-            async with self.session.post(url, json=params) if params else self.session.get(url) as response:
-                return await response.json()
-        except Exception as e:
-            logger.error(f"Error making request to Telegram API: {str(e)}")
-            return {}
-
-    async def _start_polling(self):
-        """Start polling for updates"""
-        offset = 0
-        while True:
-            try:
-                updates = await self._make_request("getUpdates", {
-                    "offset": offset,
-                    "timeout": 30
-                })
-
-                if updates.get("ok") and updates.get("result"):
-                    for update in updates["result"]:
-                        offset = update["update_id"] + 1
-                        await self._handle_update(update)
-
-            except asyncio.CancelledError:
-                logger.info("Polling task cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in polling loop: {str(e)}")
-                await asyncio.sleep(5)
-
-    async def _handle_update(self, update: Dict):
-        """Handle incoming updates"""
-        try:
-            if "message" in update:
-                message = update["message"]
-                if "text" in message:
-                    text = message["text"]
-                    chat_id = message["chat"]["id"]
-                    user_id = str(message["from"]["id"])
-
-                    if text.startswith("/"):
-                        command = text.split()[0].lower()
-                        if command == "/start":
-                            await self._handle_start(chat_id, user_id)
-                        elif command == "/help":
-                            await self._send_help_message(chat_id)
-                        elif command == "/stop":
-                            await self._handle_stop(chat_id, user_id)
-                        elif command == "/update":
-                            await self._handle_update_command(chat_id, user_id, text)
-                        elif command == "/status":
-                            await self._handle_status(chat_id, user_id)
-                    else:
-                        # Handle user input based on state
-                        await self._handle_user_input(chat_id, user_id, text)
-
-        except Exception as e:
-            logger.error(f"Error handling update: {str(e)}")
-
-    async def _handle_start(self, chat_id: int, user_id: str):
-        """Handle /start command"""
-        self.user_states[user_id] = SETUP_SYMBOL
-        welcome_text = (
-            "Welcome to Straddle Strategy Crypto Bot 📈🤖\n\n"
-            "Let's set up your trading configuration.\n\n"
-            "Which crypto do you want to monitor?\n"
-            f"Supported pairs: {', '.join(self.market_analyzer.supported_pairs)}\n"
-            "Example: BTC/USDT"
-        )
-        await self._make_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": welcome_text
-        })
-
-    async def _handle_user_input(self, chat_id: int, user_id: str, text: str):
-        """Handle user input based on current state"""
-        current_state = self.user_states.get(user_id)
-
-        if current_state == SETUP_SYMBOL:
-            await self._handle_symbol_input(chat_id, user_id, text)
-        elif current_state == SETUP_TIMEFRAME:
-            await self._handle_timeframe_input(chat_id, user_id, text)
-        elif current_state == SETUP_AMOUNT:
-            await self._handle_amount_input(chat_id, user_id, text)
-
-    async def _handle_symbol_input(self, chat_id: int, user_id: str, symbol: str):
-        """Handle symbol input"""
-        symbol = symbol.upper()
-        supported_pairs = self.market_analyzer.crypto_service.get_all_active_pairs()
-
-        if symbol not in supported_pairs:
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"❌ Invalid trading pair. Supported pairs: {', '.join(supported_pairs)}\nPlease try again:"
-            })
-            return
-
-        self.user_settings[user_id] = {'symbol': symbol}
-        self.user_states[user_id] = SETUP_TIMEFRAME
-
-        await self._make_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": "What's your time duration?\nAvailable options: 5m, 10m, 15m"
-        })
-
-    async def _handle_timeframe_input(self, chat_id: int, user_id: str, timeframe: str):
-        """Handle timeframe input"""
-        timeframe = timeframe.lower()
-        if timeframe not in self.market_analyzer.timeframes:
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "❌ Invalid timeframe. Please enter: 5m, 10m, or 15m"
-            })
-            return
-
-        self.user_settings[user_id]['timeframe'] = timeframe
-        self.user_states[user_id] = SETUP_AMOUNT
-
-        await self._make_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": "How much are you investing (USDT)?\nExample: 1000"
-        })
-
-    async def _handle_amount_input(self, chat_id: int, user_id: str, amount: str):
-        """Handle amount input"""
-        try:
-            amount = float(amount)
-            if amount <= 0:
-                raise ValueError("Amount must be positive")
-
-            self.user_settings[user_id]['amount'] = amount
-            del self.user_states[user_id]  # Clear setup state
-
-            # Initialize trade tracking
-            self.user_trades[user_id] = {
-                'last_action': None,
-                'entry_price': None,
-                'quantity': None,
-                'timestamp': None
-            }
-
-            # Start notifications
-            await self._start_user_notifications(chat_id, user_id)
-
-            # Send confirmation
-            settings = self.user_settings[user_id]
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": (
-                    "✅ Setup complete!\n\n"
-                    f"🔹 Crypto: {settings['symbol']}\n"
-                    f"🕒 Timeframe: {settings['timeframe']}\n"
-                    f"💰 Investment: {settings['amount']} USDT\n\n"
-                    "You will receive regular updates with trading signals.\n\n"
-                    "Commands:\n"
-                    "/update - Update trade (e.g., /update buy 63500 0.0015)\n"
-                    "/stop - Stop notifications\n"
-                    "/help - Show help message"
-                )
-            })
-
-        except ValueError:
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "❌ Invalid amount. Please enter a positive number:"
-            })
-
-    async def _handle_update_command(self, chat_id: int, user_id: str, text: str):
-        """Handle /update command"""
-        try:
-            # Parse command: /update action price qty
-            parts = text.split()
-            if len(parts) != 4:
-                raise ValueError("Invalid format. Use: /update action price qty")
-
-            action = parts[1].lower()
-            if action not in ['buy', 'sell']:
-                raise ValueError("Action must be 'buy' or 'sell'")
-
-            price = float(parts[2])
-            quantity = float(parts[3])
-
-            if price <= 0 or quantity <= 0:
-                raise ValueError("Price and quantity must be positive")
-
-            # Update trade info
-            self.user_trades[user_id] = {
-                'last_action': action,
-                'entry_price': price,
-                'quantity': quantity,
-                'timestamp': datetime.now().isoformat()
-            }
-
-            # Send confirmation
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": (
-                    "✅ Trade updated successfully!\n\n"
-                    f"Action: {action.upper()}\n"
-                    f"Price: ${price:,.2f}\n"
-                    f"Quantity: {quantity}\n"
-                    f"Total: ${price * quantity:,.2f}"
-                )
-            })
-
-        except (ValueError, IndexError) as e:
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"❌ Error: {str(e)}\nFormat: /update buy|sell price quantity\nExample: /update buy 63500 0.0015"
-            })
-
-    async def _start_user_notifications(self, chat_id: int, user_id: str):
-        """Start notifications for a user"""
-        if user_id in self.notification_tasks:
-            self.notification_tasks[user_id].cancel()
-
-        settings = self.user_settings[user_id]
-        interval_minutes = int(settings['timeframe'].replace('m', ''))
-
-        async def send_periodic_updates():
-            while True:
-                try:
-                    # Get market analysis
-                    analysis = await self.market_analyzer.get_market_analysis(
-                        settings['symbol'],
-                        settings['timeframe']
-                    )
-
-                    # Get trade info
-                    trade_info = self.user_trades.get(user_id, {})
-                    current_price = analysis['current_price']
-
-                    # Calculate P&L if we have trade info
-                    pnl_text = ""
-                    if trade_info.get('entry_price') and trade_info.get('quantity'):
-                        entry_total = trade_info['entry_price'] * trade_info['quantity']
-                        current_total = current_price * trade_info['quantity']
-                        pnl = current_total - entry_total
-                        pnl_text = (
-                            f"📦 Qty: {trade_info['quantity']} {settings['symbol'].split('/')[0]}\n"
-                            f"📊 P&L: ${pnl:+,.2f} "
-                            f"({'✅' if pnl > 0 else '❌'})\n"
-                        )
-
-                    # Format message
-                    message = (
-                        "📢 STRADDLE STRATEGY SIGNAL\n\n"
-                        f"🔹 Crypto: {settings['symbol']}\n"
-                        f"🕒 Timeframe: {settings['timeframe']}\n"
-                    )
-
-                    if trade_info.get('last_action'):
-                        message += (
-                            f"💰 Last Action: {trade_info['last_action'].upper()}\n"
-                            f"📈 Entry Price: ${trade_info['entry_price']:,.2f}\n"
-                        )
-
-                    message += (
-                        f"📉 Current Price: ${current_price:,.2f}\n"
-                        f"{pnl_text}\n"
-                        f"🧠 Signal: {analysis['recommendation']['action'].upper()}\n"
-                        f"🎯 Reason: {analysis['recommendation']['reason']}\n"
-                    )
-
-                    if analysis['recommendation'].get('stop_loss'):
-                        message += f"🛑 Stop Loss: ${analysis['recommendation']['stop_loss']:,.2f}\n"
-                    if analysis['recommendation'].get('target_price'):
-                        message += f"🎯 Target: ${analysis['recommendation']['target_price']:,.2f}\n"
-
-                    message += f"\n📬 Next update in {interval_minutes} minutes..."
-
-                    # Add TradingView chart link
-                    tv_symbol = settings['symbol'].replace('/', '')
-                    message += f"\n\n📊 Chart: https://www.tradingview.com/chart/?symbol={tv_symbol}"
-
-                    await self._make_request("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": message,
-                        "disable_web_page_preview": True
-                    })
-
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(f"Error sending update to user {user_id}: {str(e)}")
-
-                await asyncio.sleep(interval_minutes * 60)
-
-        self.notification_tasks[user_id] = asyncio.create_task(send_periodic_updates())
-
-    async def _handle_stop(self, chat_id: int, user_id: str):
-        """Handle /stop command"""
-        if user_id in self.notification_tasks:
-            self.notification_tasks[user_id].cancel()
-            del self.notification_tasks[user_id]
-            if user_id in self.user_settings:
-                del self.user_settings[user_id]
-            if user_id in self.user_trades:
-                del self.user_trades[user_id]
-            if user_id in self.user_states:
-                del self.user_states[user_id]
-
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "✅ Monitoring stopped. Use /start to begin again."
-            })
-        else:
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "No active monitoring to stop."
-            })
-
-    async def _handle_status(self, chat_id: int, user_id: str):
-        """Handle /status command - show current trading status"""
-        try:
-            # Check if user has active monitoring
-            if user_id not in self.user_settings:
-                await self._make_request("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "❌ No active monitoring. Use /start to begin monitoring a crypto pair."
-                })
-                return
-
-            settings = self.user_settings[user_id]
-            trade_info = self.user_trades.get(user_id, {})
-
-            # Get current market analysis
-            analysis = await self.market_analyzer.get_market_analysis(
-                settings['symbol'],
-                settings['timeframe']
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=message,
+                parse_mode=parse_mode
             )
-
-            current_price = analysis['current_price']
-
-            # Calculate P&L if we have trade info
-            pnl_text = ""
-            if trade_info.get('entry_price') and trade_info.get('quantity'):
-                entry_total = trade_info['entry_price'] * trade_info['quantity']
-                current_total = current_price * trade_info['quantity']
-                pnl = current_total - entry_total
-                pnl_percent = (pnl / entry_total) * 100
-                pnl_text = (
-                    f"📦 Quantity: {trade_info['quantity']} {settings['symbol'].split('/')[0]}\n"
-                    f"📊 P&L: ${pnl:+,.2f} ({pnl_percent:+.2f}%) "
-                    f"({'✅' if pnl > 0 else '❌'})\n"
-                )
-
-            # Get time until next update
-            next_update = ""
-            if user_id in self.notification_tasks:
-                interval_minutes = int(settings['timeframe'].replace('m', ''))
-                next_update = f"\n⏰ Next scheduled update in {interval_minutes} minutes"
-
-            # Format status message
-            status = (
-                "📈 CURRENT STATUS\n\n"
-                f"🔹 Trading Pair: {settings['symbol']}\n"
-                f"🕒 Timeframe: {settings['timeframe']}\n"
-                f"💰 Investment: {settings['amount']} USDT\n"
-            )
-
-            if trade_info.get('last_action'):
-                time_str = datetime.fromisoformat(trade_info['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
-                status += (
-                    f"\n💫 Last Trade:\n"
-                    f"📅 Time: {time_str}\n"
-                    f"🎯 Action: {trade_info['last_action'].upper()}\n"
-                    f"💵 Entry Price: ${trade_info['entry_price']:,.2f}\n"
-                )
-
-            status += (
-                f"\n📊 Current Status:\n"
-                f"💰 Current Price: ${current_price:,.2f}\n"
-                f"{pnl_text}\n"
-                f"📈 Signal: {analysis['recommendation']['action'].upper()}\n"
-                f"💭 Reason: {analysis['recommendation']['reason']}\n"
-            )
-
-            if analysis['recommendation'].get('stop_loss'):
-                status += f"🛑 Stop Loss: ${analysis['recommendation']['stop_loss']:,.2f}\n"
-            if analysis['recommendation'].get('target_price'):
-                status += f"🎯 Target: ${analysis['recommendation']['target_price']:,.2f}\n"
-
-            status += next_update
-
-            # Add TradingView chart link
-            tv_symbol = settings['symbol'].replace('/', '')
-            status += f"\n\n📊 Chart: https://www.tradingview.com/chart/?symbol={tv_symbol}"
-
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": status,
-                "disable_web_page_preview": True
-            })
-
+            return True
         except Exception as e:
-            logger.error(f"Error getting status: {str(e)}")
-            await self._make_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"❌ Error getting status: {str(e)}"
-            })
+            logger.error(f"Failed to send Telegram message: {str(e)}")
+            return False
 
-    async def _send_help_message(self, chat_id: int):
-        """Send help message"""
-        help_text = (
-            "🤖 Available Commands:\n\n"
-            "/start - Start monitoring a crypto pair\n"
-            "/status - Check current trading status\n"
-            "/update - Update trade details\n"
-            "  Format: /update action price qty\n"
-            "  Example: /update buy 63500 0.0015\n"
-            "/stop - Stop monitoring\n"
-            "/help - Show this help message\n\n"
-            "📊 Features:\n"
-            "• Real-time price monitoring\n"
-            "• Straddle strategy signals\n"
-            "• P&L tracking\n"
-            "• Auto trade suggestions\n"
-            "• TradingView chart links"
-        )
-        await self._make_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": help_text
-        })
-
-    async def send_error_notification(self, error_message: str, details: Optional[Dict] = None):
+    async def send_error_notification(self, error_message: str, error_details: dict = None):
         """Send error notification"""
-        if not self.chat_id:
-            logger.error("TELEGRAM_CHAT_ID not found in environment variables")
-            return
+        if not self._initialized:
+            return False
 
-        message = f"❌ Error: {error_message}"
-        if details:
-            message += "\n\nDetails:"
-            for key, value in details.items():
-                message += f"\n{key}: {value}"
+        try:
+            message = f"🚨 Error Alert:\n{error_message}"
+            if error_details:
+                message += "\n\nDetails:"
+                for key, value in error_details.items():
+                    message += f"\n{key}: {value}"
 
-        await self._make_request("sendMessage", {
-            "chat_id": self.chat_id,
-            "text": message
-        })
+            return await self.send_message(message)
+        except Exception as e:
+            logger.error(f"Failed to send error notification: {str(e)}")
+            return False
 
     async def send_test_notification(self) -> bool:
-        """Send a test notification"""
-        if not self.chat_id:
-            logger.error("TELEGRAM_CHAT_ID not found in environment variables")
+        """Send test notification"""
+        if not self._initialized:
             return False
 
         try:
-            result = await self._make_request("sendMessage", {
-                "chat_id": self.chat_id,
-                "text": "✅ Telegram bot is working correctly!"
-            })
-            return result.get("ok", False)
+            message = "🔔 Test notification from Crypto Trading Bot\n\nIf you see this message, the bot is working correctly!"
+            return await self.send_message(message)
         except Exception as e:
-            logger.error(f"Error sending test notification: {str(e)}")
+            logger.error(f"Failed to send test notification: {str(e)}")
             return False
+
+    async def send_trade_notification(self, strategy_type: str, symbol: str, entry_price: float, quantity: float):
+        """Send trade notification"""
+        if not self._initialized:
+            return False
+
+        try:
+            message = (
+                f"🔔 New Trade Alert\n\n"
+                f"Strategy: {strategy_type}\n"
+                f"Symbol: {symbol}\n"
+                f"Entry Price: ${entry_price:,.2f}\n"
+                f"Quantity: {quantity:,.8f}\n"
+                f"Total Value: ${entry_price * quantity:,.2f}"
+            )
+            return await self.send_message(message)
+        except Exception as e:
+            logger.error(f"Failed to send trade notification: {str(e)}")
+            return False
+
+    async def send_daily_summary(self, summary: dict):
+        """Send daily trading summary"""
+        if not self._initialized:
+            return False
+
+        try:
+            message = "📊 Daily Trading Summary\n\n"
+            message += f"Total Trades: {summary['total_trades']}\n"
+            message += f"Winning Trades: {summary['winning_trades']}\n"
+            message += f"Losing Trades: {summary['losing_trades']}\n"
+            message += f"Net Profit: {summary['net_profit']:+.2f}%\n\n"
+
+            if summary.get('best_trade'):
+                message += f"Best Trade: {summary['best_trade']:+.2f}%\n"
+            if summary.get('worst_trade'):
+                message += f"Worst Trade: {summary['worst_trade']:+.2f}%\n\n"
+
+            if summary.get('trades'):
+                message += "Recent Trades:\n"
+                for trade in summary['trades'][:5]:  # Show last 5 trades
+                    message += f"- {trade['symbol']}: {trade['profit_pct']:+.2f}% "
+                    message += f"(${trade['entry_price']:,.2f} → ${trade['exit_price']:,.2f})\n"
+
+            return await self.send_message(message)
+        except Exception as e:
+            logger.error(f"Failed to send daily summary: {str(e)}")
+            return False
+
+    async def get_pairs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /pairs command"""
+        try:
+            pairs = await self.market_analyzer._update_supported_pairs()
+            pairs = self.market_analyzer.get_supported_pairs()
+            if pairs:
+                message = "Available trading pairs:\n" + "\n".join(pairs)
+            else:
+                message = "No trading pairs available"
+            await update.message.reply_text(message)
+        except Exception as e:
+            logger.error(f"Error handling /pairs command: {str(e)}")
+            await update.message.reply_text("Failed to get trading pairs")
+
+    async def get_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /analysis command"""
+        try:
+            if not context.args or len(context.args) < 1:
+                await update.message.reply_text("Usage: /analysis SYMBOL [TIMEFRAME]\nExample: /analysis BTC/USDT 5m")
+                return
+
+            symbol = context.args[0].upper()
+            timeframe = context.args[1] if len(context.args) > 1 else "5m"
+
+            analysis = await self.market_analyzer.get_market_analysis(symbol, timeframe)
+            if not analysis:
+                await update.message.reply_text(f"No analysis available for {symbol}")
+                return
+
+            # Format the analysis message
+            message = f"Market Analysis for {symbol} ({timeframe}):\n\n"
+
+            if 'market_summary' in analysis:
+                summary = analysis['market_summary']
+                message += f"Price: ${summary['last_price']:,.2f}\n"
+                message += f"24h Change: {summary['price_change_24h']:+.2f}%\n"
+                message += f"24h Volume: ${summary['volume_24h']:,.2f}\n\n"
+
+            if 'trading_signals' in analysis:
+                signals = analysis['trading_signals']
+                message += f"Trend: {signals['trend'].upper()}\n"
+                message += f"Momentum: {signals['momentum']:+.2f}%\n"
+                message += f"Volume Ratio: {signals['volume_ratio']:.2f}x\n\n"
+
+            if 'volatility_metrics' in analysis:
+                volatility = analysis['volatility_metrics']
+                message += f"Volatility: {volatility['volatility']*100:.2f}%\n"
+                message += f"Price Range: {volatility['price_range']*100:.2f}%\n"
+
+            await update.message.reply_text(message)
+        except Exception as e:
+            logger.error(f"Error handling /analysis command: {str(e)}")
+            await update.message.reply_text(f"Error analyzing {symbol}: {str(e)}")
+
+    async def get_signals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /signals command"""
+        try:
+            if not context.args or len(context.args) < 1:
+                await update.message.reply_text("Usage: /signals SYMBOL [TIMEFRAME]\nExample: /signals BTC/USDT 1h")
+                return
+
+            symbol = context.args[0].upper()
+            timeframe = context.args[1] if len(context.args) > 1 else "1h"
+
+            signals = await self.market_analyzer.get_trading_signals(symbol, timeframe)
+            if not signals:
+                await update.message.reply_text(f"No signals available for {symbol}")
+                return
+
+            message = f"Trading Signals for {symbol} ({timeframe}):\n\n"
+            message += f"Current Price: ${signals['current_price']:,.2f}\n"
+            message += f"Trend: {signals['trend'].upper()}\n"
+            message += f"SMA20: ${signals['sma20']:,.2f}\n"
+            message += f"SMA50: ${signals['sma50']:,.2f}\n"
+            message += f"Momentum: {signals['momentum']:+.2f}%\n"
+            message += f"Volume Ratio: {signals['volume_ratio']:.2f}x\n"
+
+            await update.message.reply_text(message)
+        except Exception as e:
+            logger.error(f"Error handling /signals command: {str(e)}")
+            await update.message.reply_text(f"Error getting signals for {symbol}: {str(e)}")
+
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send help message with available commands"""
+        help_text = """
+Available commands:
+Trading:
+/pairs - List available trading pairs
+/analysis <symbol> - Get market analysis for a symbol (e.g. /analysis BTC/USDT)
+/signals <symbol> - Get trading signals for a symbol (e.g. /signals BTC/USDT)
+
+Portfolio:
+/buy <symbol> <quantity> <price> - Add a buy transaction (e.g. /buy BTC/USDT 0.1 50000)
+/sell <symbol> <quantity> <price> - Add a sell transaction (e.g. /sell BTC/USDT 0.1 51000)
+/portfolio - View your current portfolio
+/history [symbol] - View transaction history (optional: filter by symbol)
+/profit [timeframe] - View profit summary (timeframe: daily/weekly/monthly/all)
+
+Other:
+/start - Start the bot
+/help - Show this help message
+"""
+        await update.message.reply_text(help_text)
+
+    async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command"""
+        try:
+            chat_id = update.message.chat_id
+            user_id = update.message.from_user.id
+
+            # Add user to active users list or database
+            message = (
+                "🤖 Welcome to the Crypto Trading Bot!\n\n"
+                "I will help you monitor your trades and provide market analysis.\n"
+                "Use /help to see available commands."
+            )
+            await update.message.reply_text(message)
+            logger.info(f"New user started the bot: {user_id}")
+        except Exception as e:
+            logger.error(f"Error handling start command: {str(e)}")
+            await update.message.reply_text("Failed to start the bot. Please try again.")
+
+    async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /stop command"""
+        try:
+            chat_id = update.message.chat_id
+            user_id = update.message.from_user.id
+
+            # Remove user from active users list or database
+            message = "Bot stopped. You will no longer receive notifications.\nUse /start to enable the bot again."
+            await update.message.reply_text(message)
+            logger.info(f"User stopped the bot: {user_id}")
+        except Exception as e:
+            logger.error(f"Error handling stop command: {str(e)}")
+            await update.message.reply_text("Failed to stop the bot. Please try again.")
+
+    async def _handle_update_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /update command"""
+        try:
+            if not context.args or len(context.args) < 2:
+                await update.message.reply_text(
+                    "Usage: /update PARAMETER VALUE\n"
+                    "Example: /update interval 5m\n\n"
+                    "Available parameters:\n"
+                    "- interval (1m, 5m, 15m, 30m, 1h, 4h, 1d)\n"
+                    "- breakout_pct (e.g., 0.5)\n"
+                    "- tp_pct (take profit percentage)\n"
+                    "- sl_pct (stop loss percentage)\n"
+                    "- quantity (trade size)"
+                )
+                return
+
+            param = context.args[0].lower()
+            value = context.args[1]
+
+            # Validate and update parameter
+            # This is a placeholder - implement actual parameter updating logic
+            message = f"Updated {param} to {value}"
+            await update.message.reply_text(message)
+            logger.info(f"User {update.message.from_user.id} updated {param} to {value}")
+        except Exception as e:
+            logger.error(f"Error handling update command: {str(e)}")
+            await update.message.reply_text("Failed to update parameter. Please check the format and try again.")
+
+    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command"""
+        try:
+            # Get current trading status
+            # This is a placeholder - implement actual status checking logic
+            status = {
+                "active": True,
+                "current_trades": 0,
+                "last_trade_time": "No trades yet",
+                "trading_pairs": self.market_analyzer.get_supported_pairs() if self.market_analyzer else []
+            }
+
+            message = "📊 Trading Bot Status\n\n"
+            message += f"Active: {'✅' if status['active'] else '❌'}\n"
+            message += f"Current Trades: {status['current_trades']}\n"
+            message += f"Last Trade: {status['last_trade_time']}\n"
+            message += f"Trading Pairs: {len(status['trading_pairs'])}\n"
+
+            await update.message.reply_text(message)
+        except Exception as e:
+            logger.error(f"Error handling status command: {str(e)}")
+            await update.message.reply_text("Failed to get bot status. Please try again.")
+
+    async def _handle_user_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle non-command user input"""
+        try:
+            text = update.message.text
+            chat_id = update.message.chat_id
+            user_id = update.message.from_user.id
+
+            # This is a placeholder - implement actual user input handling logic
+            await update.message.reply_text(
+                "I can only respond to commands. Use /help to see available commands."
+            )
+        except Exception as e:
+            logger.error(f"Error handling user input: {str(e)}")
+            await update.message.reply_text("Failed to process your input. Please try again.")
+
+    async def handle_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle buy command: /buy <symbol> <quantity> <price>"""
+        try:
+            if len(context.args) != 3:
+                await update.message.reply_text(
+                    "Invalid format. Use: /buy <symbol> <quantity> <price>\n"
+                    "Example: /buy BTC/USDT 0.1 50000"
+                )
+                return
+
+            symbol = context.args[0].upper()
+            quantity = float(context.args[1])
+            price = float(context.args[2])
+            user_id = update.effective_user.id
+
+            result = await self.portfolio_service.add_transaction(
+                user_id=user_id,
+                symbol=symbol,
+                type="BUY",
+                quantity=quantity,
+                price=price
+            )
+
+            await update.message.reply_text(
+                f"✅ Buy order recorded:\n"
+                f"Symbol: {result['symbol']}\n"
+                f"Quantity: {result['quantity']}\n"
+                f"Price: ${result['price']:,.2f}\n"
+                f"Total: ${result['total']:,.2f}"
+            )
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling buy command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while processing your request.")
+
+    async def handle_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle sell command: /sell <symbol> <quantity> <price>"""
+        try:
+            if len(context.args) != 3:
+                await update.message.reply_text(
+                    "Invalid format. Use: /sell <symbol> <quantity> <price>\n"
+                    "Example: /sell BTC/USDT 0.1 51000"
+                )
+                return
+
+            symbol = context.args[0].upper()
+            quantity = float(context.args[1])
+            price = float(context.args[2])
+            user_id = update.effective_user.id
+
+            result = await self.portfolio_service.add_transaction(
+                user_id=user_id,
+                symbol=symbol,
+                type="SELL",
+                quantity=quantity,
+                price=price
+            )
+
+            await update.message.reply_text(
+                f"✅ Sell order recorded:\n"
+                f"Symbol: {result['symbol']}\n"
+                f"Quantity: {result['quantity']}\n"
+                f"Price: ${result['price']:,.2f}\n"
+                f"Total: ${result['total']:,.2f}"
+            )
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling sell command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while processing your request.")
+
+    async def get_portfolio(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle portfolio command to show current holdings"""
+        try:
+            user_id = update.effective_user.id
+            portfolio = await self.portfolio_service.get_portfolio(user_id)
+
+            if not portfolio['portfolio']:
+                await update.message.reply_text("Your portfolio is empty.")
+                return
+
+            # Format portfolio items
+            portfolio_text = "📊 Your Portfolio:\n\n"
+            for item in portfolio['portfolio']:
+                portfolio_text += (
+                    f"*{item['symbol']}*\n"
+                    f"Quantity: {item['quantity']:.8f}\n"
+                    f"Avg Buy: ${item['avg_buy_price']:,.2f}\n"
+                    f"Current: ${item['current_price']:,.2f}\n"
+                    f"Value: ${item['current_value']:,.2f}\n"
+                    f"P/L: ${item['profit_loss']:,.2f} ({item['profit_loss_pct']:,.2f}%)\n\n"
+                )
+
+            # Add summary
+            summary = portfolio['summary']
+            portfolio_text += (
+                f"*Portfolio Summary:*\n"
+                f"Total Invested: ${summary['total_invested']:,.2f}\n"
+                f"Current Value: ${summary['total_current_value']:,.2f}\n"
+                f"Total P/L: ${summary['total_profit_loss']:,.2f} ({summary['total_profit_loss_pct']:,.2f}%)"
+            )
+
+            await update.message.reply_text(portfolio_text, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error handling portfolio command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while retrieving your portfolio.")
+
+    async def get_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle history command to show transaction history"""
+        try:
+            user_id = update.effective_user.id
+            symbol = context.args[0].upper() if context.args else None
+
+            transactions = await self.portfolio_service.get_transaction_history(user_id, symbol)
+
+            if not transactions:
+                await update.message.reply_text(
+                    "No transactions found." if not symbol
+                    else f"No transactions found for {symbol}."
+                )
+                return
+
+            history_text = f"📜 Transaction History{f' for {symbol}' if symbol else ''}:\n\n"
+            for tx in transactions:
+                history_text += (
+                    f"*{tx['type']}* {tx['symbol']}\n"
+                    f"Quantity: {tx['quantity']:.8f}\n"
+                    f"Price: ${tx['price']:,.2f}\n"
+                    f"Total: ${tx['total']:,.2f}\n"
+                    f"Date: {tx['timestamp']}\n\n"
+                )
+
+            await update.message.reply_text(history_text, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error handling history command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while retrieving transaction history.")
+
+    async def get_profit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle profit command to show profit/loss summary"""
+        try:
+            user_id = update.effective_user.id
+            timeframe = context.args[0].lower() if context.args else 'all'
+
+            if timeframe not in ['daily', 'weekly', 'monthly', 'all']:
+                await update.message.reply_text(
+                    "Invalid timeframe. Use: daily, weekly, monthly, or all"
+                )
+                return
+
+            summary = await self.portfolio_service.get_profit_summary(user_id, timeframe)
+
+            profit_text = (
+                f"💰 Profit Summary ({timeframe}):\n\n"
+                f"Total Invested: ${summary['total_invested']:,.2f}\n"
+                f"Current Value: ${summary['total_current_value']:,.2f}\n"
+                f"Total P/L: ${summary['total_profit_loss']:,.2f} ({summary['total_profit_loss_pct']:,.2f}%)\n"
+                f"Total Trades: {summary['total_trades']}\n"
+                f"Last Updated: {summary['timestamp']}"
+            )
+
+            await update.message.reply_text(profit_text)
+        except Exception as e:
+            logger.error(f"Error handling profit command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while retrieving profit summary.")

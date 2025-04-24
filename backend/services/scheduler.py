@@ -1,105 +1,87 @@
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from typing import Dict, List
-from ..trader.strategy import StraddleStrategy
-from ..trader.ccxt_utils import ExchangeManager
+from apscheduler.triggers.cron import CronTrigger
+from datetime import datetime
+import os
 from ..services.telegram import TelegramService
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 class TradingScheduler:
-    def __init__(self):
+    def __init__(self, telegram_service: TelegramService = None):
+        """Initialize the trading scheduler with optional telegram service"""
         self.scheduler = AsyncIOScheduler()
-        self.exchange_manager = ExchangeManager()
-        self.telegram_service = TelegramService()
-        self.active_strategies: Dict[str, StraddleStrategy] = {}
-        self.job_ids: List[str] = []
+        self.telegram_service = telegram_service
+        self._setup_jobs()
+
+    def _setup_jobs(self):
+        """Setup scheduled jobs"""
+        # Daily summary at midnight
+        self.scheduler.add_job(
+            self._send_daily_summary,
+            CronTrigger(hour=0, minute=0),
+            id='daily_summary'
+        )
+
+        # Market analysis every hour
+        self.scheduler.add_job(
+            self._analyze_market,
+            CronTrigger(minute=0),
+            id='market_analysis'
+        )
+
+    async def _send_daily_summary(self):
+        """Send daily trading summary"""
+        try:
+            if self.telegram_service:
+                # Get daily summary data (implement this based on your needs)
+                summary = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "net_profit": 0.0,
+                    "trades": []
+                }
+                await self.telegram_service.send_daily_summary(summary)
+                logger.info("Daily summary sent successfully")
+        except Exception as e:
+            logger.error(f"Error sending daily summary: {str(e)}")
+
+    async def _analyze_market(self):
+        """Perform market analysis and send notifications if needed"""
+        try:
+            if self.telegram_service and self.telegram_service.market_analyzer:
+                # Get market analysis for default pair
+                symbol = os.getenv('DEFAULT_TRADING_PAIR', 'BTC/USDT')
+                analysis = await self.telegram_service.market_analyzer.get_market_analysis(symbol)
+
+                # Send notification if significant changes detected
+                if self._should_notify(analysis):
+                    await self.telegram_service.send_market_alert(symbol, analysis)
+                    logger.info(f"Market alert sent for {symbol}")
+        except Exception as e:
+            logger.error(f"Error analyzing market: {str(e)}")
+
+    def _should_notify(self, analysis: dict) -> bool:
+        """Determine if a market alert should be sent based on analysis"""
+        # Implement your notification criteria here
+        return False  # Placeholder
 
     def start(self):
+        """Start the scheduler"""
         try:
             self.scheduler.start()
-            logger.info("Trading scheduler started successfully")
+            logger.info("Trading scheduler started")
         except Exception as e:
             logger.error(f"Error starting scheduler: {str(e)}")
             raise
 
     def stop(self):
+        """Stop the scheduler"""
         try:
             self.scheduler.shutdown()
-            logger.info("Trading scheduler stopped successfully")
+            logger.info("Trading scheduler stopped")
         except Exception as e:
             logger.error(f"Error stopping scheduler: {str(e)}")
-            raise
-
-    def add_trading_job(self, symbol: str, interval: str, config: Dict):
-        try:
-            # Create strategy instance
-            strategy = StraddleStrategy(
-                self.exchange_manager.get_exchange(),
-                config
-            )
-            self.active_strategies[symbol] = strategy
-
-            # Schedule the job
-            job_id = f"{symbol}_{interval}"
-            self.scheduler.add_job(
-                self._execute_strategy,
-                IntervalTrigger(minutes=self._parse_interval(interval)),
-                id=job_id,
-                args=[symbol],
-                replace_existing=True
-            )
-            self.job_ids.append(job_id)
-
-            logger.info(f"Added trading job for {symbol} with interval {interval}")
-        except Exception as e:
-            logger.error(f"Error adding trading job for {symbol}: {str(e)}")
-            raise
-
-    def remove_trading_job(self, symbol: str):
-        try:
-            job_id = f"{symbol}_*"
-            self.scheduler.remove_job(job_id)
-            if symbol in self.active_strategies:
-                del self.active_strategies[symbol]
-            logger.info(f"Removed trading job for {symbol}")
-        except Exception as e:
-            logger.error(f"Error removing trading job for {symbol}: {str(e)}")
-            raise
-
-    async def _execute_strategy(self, symbol: str):
-        try:
-            strategy = self.active_strategies.get(symbol)
-            if not strategy:
-                logger.warning(f"No strategy found for {symbol}")
-                return
-
-            # Execute the strategy
-            trade = await strategy.execute_strategy(symbol)
-
-            # Send notification
-            await self.telegram_service.send_trade_notification(
-                "STRADDLE",
-                symbol,
-                trade.entry_price,
-                trade.quantity
-            )
-
-        except Exception as e:
-            error_message = f"Error executing strategy for {symbol}: {str(e)}"
-            logger.error(error_message)
-            await self.telegram_service.send_error_notification(error_message)
-
-    def _parse_interval(self, interval: str) -> int:
-        """Convert interval string (e.g., '5m', '1h') to minutes"""
-        try:
-            if interval.endswith('m'):
-                return int(interval[:-1])
-            elif interval.endswith('h'):
-                return int(interval[:-1]) * 60
-            else:
-                raise ValueError(f"Invalid interval format: {interval}")
-        except Exception as e:
-            logger.error(f"Error parsing interval {interval}: {str(e)}")
             raise
