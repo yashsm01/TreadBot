@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
-from ..models.portfolio import Portfolio, Transaction
+from ..models.portfolio import Portfolio, Transaction, StraddleInterval
 from ..trader.exchange_manager import ExchangeManager
 
 logger = logging.getLogger(__name__)
@@ -200,17 +200,110 @@ class PortfolioService:
 
             current_price = ticker['last']
 
+            # Get the interval if set
+            interval = self.db.query(StraddleInterval).filter(
+                StraddleInterval.position_id == position_id
+            ).first()
+
             return {
                 "position_id": position_id,
                 "symbol": long_tx.symbol,
                 "quantity": long_tx.quantity,
                 "strike_price": long_tx.price,
                 "current_price": current_price,
-                "open_time": long_tx.timestamp.isoformat()
+                "open_time": long_tx.timestamp.isoformat(),
+                "interval": interval.interval_minutes if interval else None
             }
         except Exception as e:
             logger.error(f"Error getting straddle position: {str(e)}")
             return None
+
+    async def update_straddle_position(self, user_id: int, position_id: int, new_price: float, new_quantity: float) -> Optional[Dict]:
+        """Update an existing straddle position"""
+        try:
+            # Get both legs of the straddle
+            long_tx = self.db.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.id == position_id,
+                Transaction.type == 'BUY'
+            ).first()
+
+            if not long_tx:
+                return None
+
+            # Find the matching short position
+            short_tx = self.db.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.symbol == long_tx.symbol,
+                Transaction.type == 'SELL',
+                Transaction.timestamp == long_tx.timestamp
+            ).first()
+
+            if not short_tx:
+                return None
+
+            # Update both positions
+            long_tx.price = new_price
+            long_tx.quantity = new_quantity
+            long_tx.total = new_price * new_quantity
+
+            short_tx.price = new_price
+            short_tx.quantity = new_quantity
+            short_tx.total = new_price * new_quantity
+
+            self.db.commit()
+
+            return {
+                "symbol": long_tx.symbol,
+                "new_price": new_price,
+                "new_quantity": new_quantity,
+                "position_id": position_id
+            }
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error updating straddle position: {str(e)}")
+            return None
+
+    async def set_straddle_interval(self, user_id: int, position_id: int, interval: int) -> bool:
+        """Set or update the notification interval for a straddle position"""
+        try:
+            straddle_interval = self.db.query(StraddleInterval).filter(
+                StraddleInterval.position_id == position_id
+            ).first()
+
+            if straddle_interval:
+                straddle_interval.interval_minutes = interval
+            else:
+                straddle_interval = StraddleInterval(
+                    position_id=position_id,
+                    user_id=user_id,
+                    interval_minutes=interval
+                )
+                self.db.add(straddle_interval)
+
+            self.db.commit()
+            return True
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error setting straddle interval: {str(e)}")
+            return False
+
+    async def get_price_history(self, symbol: str, limit: int = 3) -> List[float]:
+        """Get recent price history for a symbol"""
+        try:
+            ticker = await self.exchange_manager.get_ticker(symbol)
+            if not ticker:
+                return []
+
+            # In a real implementation, you would fetch historical prices
+            # For now, we'll return the current price repeated
+            return [ticker['last']] * limit
+
+        except Exception as e:
+            logger.error(f"Error getting price history: {str(e)}")
+            return []
 
     async def get_straddle_positions(self, user_id: int) -> List[Dict]:
         """Get all active straddle positions for a user"""

@@ -55,6 +55,7 @@ class TelegramService:
 
             # Straddle Strategy commands
             self.application.add_handler(CommandHandler("straddle", self.handle_straddle))
+            self.application.add_handler(CommandHandler("update_straddle", self.handle_update_straddle))
             self.application.add_handler(CommandHandler("close_straddle", self.handle_close_straddle))
             self.application.add_handler(CommandHandler("straddles", self.get_straddle_positions))
 
@@ -279,7 +280,8 @@ Portfolio:
 /profit [timeframe] - View profit summary (timeframe: daily/weekly/monthly/all)
 
 Straddle Strategy:
-/straddle <symbol> <quantity> <strike_price> - Open a new straddle position
+/straddle <symbol> <quantity> <strike_price> <interval> - Open a new straddle position
+/update_straddle <position_id> <new_price> <new_quantity> - Update an existing straddle position
 /close_straddle <position_id> - Close an existing straddle position
 /straddles - View all active straddle positions
 
@@ -556,16 +558,17 @@ Other:
     async def handle_straddle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /straddle command to open a new straddle position"""
         try:
-            if not context.args or len(context.args) != 3:
+            if not context.args or len(context.args) != 4:
                 await update.message.reply_text(
-                    "Invalid format. Use: /straddle <symbol> <quantity> <strike_price>\n"
-                    "Example: /straddle BTC/USDT 0.1 50000"
+                    "Invalid format. Use: /straddle <symbol> <quantity> <strike_price> <interval>\n"
+                    "Example: /straddle BTC/USDT 0.1 50000 5"
                 )
                 return
 
             symbol = context.args[0].upper()
             quantity = float(context.args[1])
             strike_price = float(context.args[2])
+            interval = int(context.args[3])
             user_id = update.effective_user.id
 
             # Get current market price for validation
@@ -593,6 +596,13 @@ Other:
                 price=strike_price
             )
 
+            # Store the interval for automated notifications
+            await self.portfolio_service.set_straddle_interval(
+                user_id=user_id,
+                position_id=long_result['transaction_id'],
+                interval=interval
+            )
+
             await update.message.reply_text(
                 f"✅ Straddle position opened:\n"
                 f"Symbol: {symbol}\n"
@@ -601,7 +611,15 @@ Other:
                 f"Current Price: ${current_price:,.2f}\n"
                 f"Long Position ID: {long_result['transaction_id']}\n"
                 f"Short Position ID: {short_result['transaction_id']}\n"
-                f"Total Investment: ${(quantity * strike_price * 2):,.2f}"
+                f"Total Investment: ${(quantity * strike_price * 2):,.2f}\n"
+                f"Alert Interval: {interval} minutes"
+            )
+
+            # Start automated notifications
+            await self.schedule_straddle_notifications(
+                user_id=user_id,
+                position_id=long_result['transaction_id'],
+                interval=interval
             )
 
         except ValueError as e:
@@ -609,6 +627,46 @@ Other:
         except Exception as e:
             logger.error(f"Error handling straddle command: {str(e)}")
             await update.message.reply_text("❌ An error occurred while creating the straddle position.")
+
+    async def handle_update_straddle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /update_straddle command to update an existing straddle position"""
+        try:
+            if not context.args or len(context.args) != 3:
+                await update.message.reply_text(
+                    "Invalid format. Use: /update_straddle <position_id> <new_price> <new_quantity>\n"
+                    "Example: /update_straddle 123 51000 0.15"
+                )
+                return
+
+            position_id = int(context.args[0])
+            new_price = float(context.args[1])
+            new_quantity = float(context.args[2])
+            user_id = update.effective_user.id
+
+            result = await self.portfolio_service.update_straddle_position(
+                user_id=user_id,
+                position_id=position_id,
+                new_price=new_price,
+                new_quantity=new_quantity
+            )
+
+            if not result:
+                await update.message.reply_text("❌ Position not found or could not be updated.")
+                return
+
+            await update.message.reply_text(
+                f"✅ Straddle position updated:\n"
+                f"Position ID: {position_id}\n"
+                f"New Price: ${new_price:,.2f}\n"
+                f"New Quantity: {new_quantity}\n"
+                f"Symbol: {result['symbol']}"
+            )
+
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling update_straddle command: {str(e)}")
+            await update.message.reply_text("❌ An error occurred while updating the straddle position.")
 
     async def handle_close_straddle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /close_straddle command to close an existing straddle position"""
@@ -689,14 +747,22 @@ Other:
                 position_pl = long_pl + short_pl
                 total_pl += position_pl
 
+                # Determine bias based on price movement
+                bias = "LONG" if pos['current_price'] < pos['strike_price'] else "SHORT"
+                price_diff_pct = abs(pos['current_price'] - pos['strike_price']) / pos['strike_price'] * 100
+
                 positions_text += (
                     f"ID: {pos['position_id']}\n"
                     f"Symbol: {pos['symbol']}\n"
                     f"Quantity: {pos['quantity']:.8f}\n"
                     f"Strike: ${pos['strike_price']:,.2f}\n"
                     f"Current: ${pos['current_price']:,.2f}\n"
-                    f"P/L: ${position_pl:,.2f}\n"
-                    f"Opened: {pos['open_time']}\n\n"
+                    f"Long P/L: ${long_pl:,.2f}\n"
+                    f"Short P/L: ${short_pl:,.2f}\n"
+                    f"Total P/L: ${position_pl:,.2f}\n"
+                    f"Current Bias: {bias} ({price_diff_pct:.2f}% from strike)\n"
+                    f"Opened: {pos['open_time']}\n"
+                    f"Alert Interval: {pos.get('interval', 'N/A')} minutes\n\n"
                 )
 
             positions_text += f"Total P/L Across All Positions: ${total_pl:,.2f}"
@@ -705,3 +771,61 @@ Other:
         except Exception as e:
             logger.error(f"Error handling straddles command: {str(e)}")
             await update.message.reply_text("❌ An error occurred while retrieving straddle positions.")
+
+    async def send_straddle_notification(self, user_id: int, position_id: int):
+        """Send automated notification for a straddle position"""
+        try:
+            position = await self.portfolio_service.get_straddle_position(user_id, position_id)
+            if not position:
+                return
+
+            # Get price history
+            price_history = await self.market_analyzer.get_price_history(
+                position['symbol'],
+                limit=3
+            )
+
+            # Calculate P/L
+            long_pl = (position['current_price'] - position['strike_price']) * position['quantity']
+            short_pl = (position['strike_price'] - position['current_price']) * position['quantity']
+            total_pl = long_pl + short_pl
+
+            # Determine strategy action
+            price_diff = position['current_price'] - position['strike_price']
+            action = "SELL" if price_diff > 0 else "BUY"
+            bias = "SHORT" if price_diff > 0 else "LONG"
+
+            message = (
+                f"[STRADDLE STRATEGY ALERT 🔁]\n\n"
+                f"Symbol: {position['symbol']}\n"
+                f"Strategy Action: {action} now ({bias} bias)\n"
+                f"Current Price: ${position['current_price']:,.2f}\n"
+                f"Strike Price: ${position['strike_price']:,.2f}\n\n"
+                f"💰 Entry Price (BUY): ${position['strike_price']:,.2f}\n"
+                f"💰 Entry Price (SELL): ${position['strike_price']:,.2f}\n\n"
+                f"Last 3 Prices:\n"
+            )
+
+            for price in price_history:
+                message += f"- ${price:,.2f}\n"
+
+            message += (
+                f"\n📊 P/L (Buy Leg): ${long_pl:+,.2f}\n"
+                f"📊 P/L (Sell Leg): ${short_pl:+,.2f}\n"
+                f"Total P/L: ${total_pl:+,.2f}\n\n"
+                f"Next update in: {position.get('interval', 'N/A')} min ⏳"
+            )
+
+            await self.send_message(message)
+
+        except Exception as e:
+            logger.error(f"Error sending straddle notification: {str(e)}")
+
+    async def schedule_straddle_notifications(self, user_id: int, position_id: int, interval: int):
+        """Schedule automated notifications for a straddle position"""
+        try:
+            while True:
+                await self.send_straddle_notification(user_id, position_id)
+                await asyncio.sleep(interval * 60)  # Convert minutes to seconds
+        except Exception as e:
+            logger.error(f"Error in straddle notification scheduler: {str(e)}")

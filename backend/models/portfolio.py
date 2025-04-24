@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, func
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 import os
 import sys
 
@@ -11,23 +12,36 @@ if current_dir not in sys.path:
 from database import Base
 
 class Portfolio(Base):
-    __tablename__ = "portfolio"
+    __tablename__ = "portfolios"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True)
-    symbol = Column(String, index=True)
-    quantity = Column(Float)
-    avg_buy_price = Column(Float)
-    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    symbol = Column(String, nullable=False)
+    quantity = Column(Float, nullable=False, default=0)
+    avg_buy_price = Column(Float, nullable=False)
+    last_updated = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
 class Transaction(Base):
     __tablename__ = "transactions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True)
-    symbol = Column(String, index=True)
-    type = Column(String)  # 'BUY' or 'SELL'
-    quantity = Column(Float)
-    price = Column(Float)
-    total = Column(Float)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    symbol = Column(String, nullable=False)
+    type = Column(String, nullable=False)  # BUY or SELL
+    quantity = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    total = Column(Float, nullable=False)
+    timestamp = Column(DateTime, nullable=False, server_default=func.now())
+
+class StraddleInterval(Base):
+    __tablename__ = "straddle_intervals"
+
+    id = Column(Integer, primary_key=True)
+    position_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
+    user_id = Column(Integer, nullable=False)
+    interval_minutes = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    # Relationship to the transaction
+    transaction = relationship("Transaction")
