@@ -1,0 +1,86 @@
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from app.crud.crud_trade import trade as trade_crud
+from app.crud.crud_position import position as position_crud
+from app.schemas import trade as trade_schemas
+from app.schemas import position as position_schemas
+from app.core.logger import logger
+from datetime import datetime
+
+class TradeService:
+    @staticmethod
+    async def create_trade(db: Session, trade_data: trade_schemas.TradeCreate) -> trade_schemas.Trade:
+        """Create a new trade and update associated position"""
+        try:
+            # Create trade
+            trade = trade_crud.create(db=db, obj_in=trade_data)
+
+            # Create or update position
+            position = position_crud.get_active_positions(db=db, symbol=trade.symbol)
+            if not position:
+                position_data = position_schemas.PositionCreate(
+                    symbol=trade.symbol,
+                    strategy="TIME_BASED_STRADDLE",
+                )
+                position = position_crud.create(db=db, obj_in=position_data)
+
+            # Associate trade with position
+            trade.position_id = position.id
+            db.commit()
+            db.refresh(trade)
+
+            return trade
+        except Exception as e:
+            logger.error(f"Error creating trade: {str(e)}")
+            raise
+
+    @staticmethod
+    async def close_trade(
+        db: Session, trade_id: int, exit_price: float
+    ) -> trade_schemas.Trade:
+        """Close a trade and update position"""
+        try:
+            trade = trade_crud.get(db=db, id=trade_id)
+            if not trade:
+                raise ValueError("Trade not found")
+            if trade.status == "CLOSED":
+                raise ValueError("Trade already closed")
+
+            trade.close_trade(exit_price)
+            db.commit()
+            db.refresh(trade)
+
+            # Update position metrics
+            if trade.position:
+                trade.position.update_position_metrics()
+                db.commit()
+                db.refresh(trade.position)
+
+            return trade
+        except Exception as e:
+            logger.error(f"Error closing trade: {str(e)}")
+            raise
+
+    @staticmethod
+    async def get_trades(
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        symbol: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> List[trade_schemas.Trade]:
+        """Get trades with filters"""
+        try:
+            query = db.query(trade_crud.model)
+
+            if symbol:
+                query = query.filter(trade_crud.model.symbol == symbol)
+            if status:
+                query = query.filter(trade_crud.model.status == status)
+
+            return query.offset(skip).limit(limit).all()
+        except Exception as e:
+            logger.error(f"Error fetching trades: {str(e)}")
+            raise
+
+trade_service = TradeService()

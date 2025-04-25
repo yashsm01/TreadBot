@@ -21,6 +21,9 @@ from .database import get_db, SessionLocal, init_db, check_db_connection
 from .services.portfolio import PortfolioService
 from .api import telegram_debug
 
+from app.routes.v1 import trade_routes, analysis_routes
+from app.core.config import settings
+
 # Load environment variables
 load_dotenv()
 
@@ -33,17 +36,18 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Crypto Straddle Trading Bot",
+    title=settings.PROJECT_NAME,
     description="API for automated crypto trading using time-based straddling strategy",
     version="1.0.0",
     docs_url=None,  # Disable default docs
-    redoc_url=None  # Disable default redoc
+    redoc_url=None,  # Disable default redoc
+    openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
 # Configure CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv('ALLOWED_ORIGINS', '*').split(','),
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -185,19 +189,20 @@ async def get_openapi_endpoint():
     )
 
 # Health check endpoint
-@app.get("/status", response_model=Dict)
-async def health_check():
+@app.get("/")
+def health_check(db: Session = Depends(get_db)):
     """Get the current status of the trading bot"""
     if not exchange_manager:
         raise HTTPException(status_code=503, detail="Services not initialized")
 
     return {
         "status": "healthy",
+        "environment": "paper" if settings.PAPER_TRADING else "live",
         "version": "1.0.0",
         "exchange_type": "mock" if isinstance(exchange_manager, MockExchange) else "real",
-        "paper_trading": os.getenv('PAPER_TRADING', 'true').lower() == 'true',
-        "trading_pairs": os.getenv('TRADING_PAIRS', '').split(','),
-        "default_pair": os.getenv('DEFAULT_TRADING_PAIR', 'BTC/USDT')
+        "paper_trading": settings.PAPER_TRADING,
+        "trading_pairs": settings.TRADING_PAIRS.split(','),
+        "default_pair": settings.DEFAULT_TRADING_PAIR
     }
 
 # Get all trades
@@ -470,6 +475,19 @@ async def get_all_market_analysis(
 # Register debug routers
 if os.getenv("DEBUG", "false").lower() == "true":
     app.include_router(telegram_debug.router)
+
+# Include routers
+app.include_router(
+    trade_routes.router,
+    prefix=f"{settings.API_V1_STR}/trades",
+    tags=["trades"]
+)
+
+app.include_router(
+    analysis_routes.router,
+    prefix=f"{settings.API_V1_STR}/analysis",
+    tags=["analysis"]
+)
 
 if __name__ == "__main__":
     import uvicorn
