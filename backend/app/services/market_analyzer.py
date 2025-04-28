@@ -1,8 +1,8 @@
 from typing import Dict, Optional, List
 import pandas as pd
 from datetime import datetime, timedelta
-from app.core.logger import logger
-from app.core.config import settings
+from backend.app.core.logger import logger
+from backend.app.core.config import settings
 from binance.client import Client
 import numpy as np
 

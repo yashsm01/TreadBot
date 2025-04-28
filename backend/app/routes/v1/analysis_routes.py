@@ -1,8 +1,8 @@
 from typing import Dict, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from app.core.database import get_db
-from app.controllers.analysis_controller import analysis_controller
+from backend.app.core.database import get_db
+from backend.app.controllers.analysis_controller import analysis_controller
 
 router = APIRouter()
 

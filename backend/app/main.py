@@ -1,17 +1,25 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from .core.config import settings
-from .routes.v1 import trade_routes, analysis_routes
-from .services.telegram_service import telegram_service
-from .services.crypto_service import crypto_service
-from .services.scheduler_service import scheduler_service
-from .core.database import SessionLocal
+from sqlalchemy.orm import Session
 import logging
 
+from .database import SessionLocal, engine, Base
+from .core.config import settings
+from .routes.v1 import trade_routes, analysis_routes, portfolio_routes
+from .services.telegram_service import create_telegram_service, telegram_service
+from .services.crypto_service import crypto_service
+from .services.scheduler_service import scheduler_service
+from .services.portfolio_service import portfolio_service
+from .core.exchange.exchange_manager import exchange_manager
+
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# Create FastAPI app
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.PROJECT_VERSION,
@@ -28,34 +36,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(
-    trade_routes.router,
-    prefix=f"{settings.API_V1_STR}/trades",
-    tags=["trades"]
-)
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-app.include_router(
-    analysis_routes.router,
-    prefix=f"{settings.API_V1_STR}/analysis",
-    tags=["analysis"]
-)
-
+# Initialize services with DB session
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     try:
+        logger.info("Starting application initialization...")
+
+        # Create database tables
+        logger.info("Creating database tables...")
+        Base.metadata.create_all(bind=engine)
+
         # Initialize database session
         db = SessionLocal()
+        logger.info("Database session initialized")
 
-        # Initialize services with database session
+        # Initialize exchange manager first
+        logger.info("Initializing exchange manager...")
+        exchange_manager.db = db
+        await exchange_manager.initialize()
+        logger.info("Exchange manager initialized successfully")
+
+        # Initialize other services with database session
+        logger.info("Initializing services...")
         crypto_service.db = db
         scheduler_service.db = db
+        portfolio_service.db = db
+
+        # Create and initialize telegram service
+        logger.info("Creating telegram service...")
+        global telegram_service
+        telegram_service = create_telegram_service(db)
 
         # Initialize Telegram bot
-        await telegram_service.initialize(db)
+        logger.info("Initializing Telegram bot...")
+        await telegram_service.initialize()
 
         # Start scheduler
+        logger.info("Starting scheduler...")
         await scheduler_service.start()
 
         logger.info("Application startup completed successfully")
@@ -67,11 +93,19 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     try:
+        logger.info("Starting application shutdown...")
+
         # Stop scheduler
+        logger.info("Stopping scheduler...")
         await scheduler_service.stop()
 
         # Stop Telegram bot
+        logger.info("Stopping Telegram bot...")
         await telegram_service.stop()
+
+        # Close exchange connection
+        logger.info("Closing exchange connection...")
+        await exchange_manager.close()
 
         logger.info("Application shutdown completed successfully")
     except Exception as e:
@@ -85,5 +119,25 @@ async def health_check():
         "environment": "paper" if settings.PAPER_TRADING else "live",
         "version": settings.PROJECT_VERSION,
         "telegram_bot": telegram_service._initialized,
-        "scheduler": scheduler_service.scheduler.running
+        "scheduler": scheduler_service.scheduler.running,
+        "exchange": exchange_manager._initialized
     }
+
+# Include routers
+app.include_router(
+    trade_routes.router,
+    prefix=f"{settings.API_V1_STR}/trades",
+    tags=["trades"]
+)
+
+app.include_router(
+    analysis_routes.router,
+    prefix=f"{settings.API_V1_STR}/analysis",
+    tags=["analysis"]
+)
+
+app.include_router(
+    portfolio_routes.router,
+    prefix=f"{settings.API_V1_STR}/portfolio",
+    tags=["portfolio"]
+)

@@ -4,11 +4,12 @@ from typing import List, Optional
 from datetime import datetime
 import ccxt
 import logging
-from ..models.crypto import Cryptocurrency
+from ..models.crypto import Cryptocurrency, CryptoPair
 from ..core.logger import logger
 
 class CryptoService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session = None):
+        """Initialize the crypto service"""
         self.db = db
         self.exchange = ccxt.binance()
 
@@ -75,14 +76,16 @@ class CryptoService:
             raise
 
     def get_all_active_pairs(self) -> List[str]:
-        """Get all active trading pairs"""
+        """Get all active trading pairs from the database"""
         try:
-            cryptos = self.db.query(Cryptocurrency).filter(
-                Cryptocurrency.is_active == True
-            ).all()
-            return [crypto.symbol for crypto in cryptos]
+            if not self.db:
+                logger.warning("Database session not initialized")
+                return []
+
+            pairs = self.db.query(CryptoPair).filter(CryptoPair.is_active == True).all()
+            return [pair.symbol for pair in pairs]
         except Exception as e:
-            logger.error(f"Error fetching active pairs: {str(e)}")
+            logger.error(f"Error getting active pairs: {str(e)}")
             return []
 
     def get_crypto_by_symbol(self, symbol: str) -> Optional[Cryptocurrency]:
@@ -96,9 +99,28 @@ class CryptoService:
             return None
 
     def validate_trading_pair(self, symbol: str) -> bool:
-        """Validate if trading pair exists and is active"""
-        crypto = self.get_crypto_by_symbol(symbol)
-        return crypto is not None and crypto.is_active
+        """
+        Validate if a trading pair exists in the database.
+
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT')
+
+        Returns:
+            bool: True if the trading pair exists and is active
+        """
+        try:
+            if not self.db:
+                logger.warning("Database session not initialized")
+                return False
+
+            pair = self.db.query(CryptoPair).filter(
+                CryptoPair.symbol == symbol,
+                CryptoPair.is_active == True
+            ).first()
+            return pair is not None
+        except Exception as e:
+            logger.error(f"Error validating trading pair {symbol}: {str(e)}")
+            return False
 
     def get_precision_info(self, symbol: str) -> tuple:
         """Get price and quantity precision for a symbol"""
@@ -114,4 +136,70 @@ class CryptoService:
             return crypto.min_quantity
         return 0.0  # Default if not found
 
-crypto_service = CryptoService(None)  # Will be initialized with proper db session
+    def add_trading_pair(self, symbol: str) -> bool:
+        """
+        Add a new trading pair to the database.
+
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT')
+
+        Returns:
+            bool: True if the pair was added successfully
+        """
+        try:
+            if not self.db:
+                logger.warning("Database session not initialized")
+                return False
+
+            # Check if pair already exists
+            existing_pair = self.db.query(CryptoPair).filter(
+                CryptoPair.symbol == symbol
+            ).first()
+
+            if existing_pair:
+                if not existing_pair.is_active:
+                    existing_pair.is_active = True
+                    self.db.commit()
+                return True
+
+            # Create new pair
+            new_pair = CryptoPair(symbol=symbol, is_active=True)
+            self.db.add(new_pair)
+            self.db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding trading pair {symbol}: {str(e)}")
+            self.db.rollback()
+            return False
+
+    def deactivate_trading_pair(self, symbol: str) -> bool:
+        """
+        Deactivate a trading pair.
+
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT')
+
+        Returns:
+            bool: True if the pair was deactivated successfully
+        """
+        try:
+            if not self.db:
+                logger.warning("Database session not initialized")
+                return False
+
+            pair = self.db.query(CryptoPair).filter(
+                CryptoPair.symbol == symbol
+            ).first()
+
+            if pair:
+                pair.is_active = False
+                self.db.commit()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error deactivating trading pair {symbol}: {str(e)}")
+            self.db.rollback()
+            return False
+
+# Create singleton instance
+crypto_service = CryptoService()

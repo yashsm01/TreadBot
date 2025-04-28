@@ -1,9 +1,9 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from app.core.database import get_db
-from app.controllers.trade_controller import trade_controller
-from app.schemas import trade as trade_schemas
+from backend.app.core.database import get_db
+from backend.app.controllers.trade_controller import trade_controller
+from backend.app.schemas import trade as trade_schemas
 
 router = APIRouter()
 

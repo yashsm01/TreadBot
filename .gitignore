@@ -9,8 +9,8 @@ venv/
 env/
 
 # Environment variables
-# .env
-# .env.*
+.env
+.env.*
 
 # Logs
 *.log

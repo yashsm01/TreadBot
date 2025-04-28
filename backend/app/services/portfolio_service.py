@@ -1,34 +1,45 @@
+import logging
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from app.crud.crud_position import position as position_crud
-from app.crud.crud_trade import trade as trade_crud
-from app.core.logger import logger
-from app.services.market_analyzer import market_analyzer
+from ..crud.crud_portfolio import portfolio as portfolio_crud
+from ..crud.crud_portfolio import transaction as transaction_crud
+from ..core.exchange import exchange_manager
+from ..core.logger import logger
+from ..services.market_analyzer import market_analyzer
 
 class PortfolioService:
-    @staticmethod
-    async def get_portfolio_summary(db: Session) -> Dict:
+    def __init__(self, db: Session):
+        self.db = db
+
+    async def get_portfolio_summary(self, user_id: int) -> Dict:
         """Get overall portfolio summary"""
         try:
-            # Get all positions
-            positions = position_crud.get_multi(db)
+            # Get user's portfolio
+            portfolio = await self.get_portfolio(user_id)
 
-            # Calculate portfolio metrics
-            total_realized_pnl = sum(pos.realized_pnl for pos in positions)
-            total_unrealized_pnl = sum(pos.unrealized_pnl for pos in positions)
-            total_pnl = total_realized_pnl + total_unrealized_pnl
+            # Calculate metrics
+            total_realized_pnl = 0
+            total_unrealized_pnl = 0
+            active_positions = 0
 
-            # Count positions by status
-            active_positions = len([p for p in positions if p.status == "ACTIVE"])
-            closed_positions = len([p for p in positions if p.status == "CLOSED"])
+            for position in portfolio['portfolio']:
+                if position['quantity'] > 0:
+                    active_positions += 1
+                    total_unrealized_pnl += position['profit_loss']
+
+            # Get historical transactions for realized PnL
+            transactions = await self.get_transaction_history(user_id)
+            for tx in transactions:
+                if tx['type'] == 'SELL':
+                    total_realized_pnl += tx['total'] - (tx['quantity'] * tx['price'])
 
             return {
                 "total_realized_pnl": total_realized_pnl,
                 "total_unrealized_pnl": total_unrealized_pnl,
-                "total_pnl": total_pnl,
+                "total_pnl": total_realized_pnl + total_unrealized_pnl,
                 "active_positions": active_positions,
-                "closed_positions": closed_positions,
+                "total_positions": len(portfolio['portfolio']),
                 "timestamp": datetime.utcnow().isoformat()
             }
         except Exception as e:
@@ -115,9 +126,179 @@ class PortfolioService:
             logger.error(f"Error getting trading performance: {str(e)}")
             raise
 
-    @staticmethod
+    async def add_transaction(
+        self,
+        user_id: int,
+        symbol: str,
+        type: str,
+        quantity: float,
+        price: float
+    ) -> Dict:
+        """Add a new transaction and update portfolio"""
+        try:
+            # Check risk limits
+            risk_check = await self.check_risk_limits(user_id, symbol, quantity, price)
+            if not risk_check['position_size_ok'] or not risk_check['volatility_ok']:
+                raise ValueError("Trade exceeds risk limits")
+
+            # Get or create portfolio
+            portfolio = portfolio_crud.get_by_user_and_symbol(self.db, user_id, symbol)
+
+            if not portfolio:
+                if type.upper() == 'SELL':
+                    raise ValueError("Cannot sell without existing position")
+                portfolio = portfolio_crud.create(
+                    self.db,
+                    obj_in={
+                        "user_id": user_id,
+                        "symbol": symbol,
+                        "quantity": 0,
+                        "avg_buy_price": price
+                    }
+                )
+
+            # Validate sell transaction
+            if type.upper() == 'SELL' and quantity > portfolio.quantity:
+                raise ValueError(f"Insufficient quantity. Available: {portfolio.quantity}")
+
+            # Create transaction
+            transaction = transaction_crud.create_transaction(
+                self.db,
+                user_id=user_id,
+                portfolio_id=portfolio.id,
+                symbol=symbol,
+                type=type,
+                quantity=quantity,
+                price=price
+            )
+
+            # Update portfolio
+            portfolio = portfolio_crud.update_portfolio(
+                self.db,
+                portfolio=portfolio,
+                type=type,
+                quantity=quantity,
+                price=price
+            )
+
+            return {
+                "status": "success",
+                "transaction_id": transaction.id,
+                "type": type,
+                "symbol": symbol,
+                "quantity": quantity,
+                "price": price,
+                "total": transaction.total
+            }
+        except Exception as e:
+            logger.error(f"Error adding transaction: {str(e)}")
+            raise
+
+    async def get_portfolio(self, user_id: int) -> Dict:
+        """Get user's current portfolio with live prices"""
+        try:
+            portfolio_items = portfolio_crud.get_user_portfolio(self.db, user_id)
+
+            result = []
+            total_invested = 0
+            total_current_value = 0
+
+            for item in portfolio_items:
+                # Get current price
+                ticker = await exchange_manager.get_ticker(item.symbol)
+                if not ticker:
+                    logger.error(f"Could not get ticker for {item.symbol}")
+                    continue
+
+                current_price = ticker['last']
+                current_value = item.quantity * current_price
+                invested_value = item.quantity * item.avg_buy_price
+                profit_loss = current_value - invested_value
+                profit_loss_pct = (profit_loss / invested_value) * 100 if invested_value > 0 else 0
+
+                total_invested += invested_value
+                total_current_value += current_value
+
+                result.append({
+                    "symbol": item.symbol,
+                    "quantity": item.quantity,
+                    "avg_buy_price": item.avg_buy_price,
+                    "current_price": current_price,
+                    "current_value": current_value,
+                    "invested_value": invested_value,
+                    "profit_loss": profit_loss,
+                    "profit_loss_pct": profit_loss_pct,
+                    "last_updated": item.last_updated.isoformat()
+                })
+
+            return {
+                "portfolio": result,
+                "summary": {
+                    "total_invested": total_invested,
+                    "total_current_value": total_current_value,
+                    "total_profit_loss": total_current_value - total_invested,
+                    "total_profit_loss_pct": ((total_current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting portfolio: {str(e)}")
+            raise
+
+    async def get_transaction_history(
+        self,
+        user_id: int,
+        symbol: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> List[Dict]:
+        """Get user's transaction history"""
+        try:
+            transactions = transaction_crud.get_user_transactions(
+                self.db,
+                user_id=user_id,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            return [{
+                "id": tx.id,
+                "symbol": tx.symbol,
+                "type": tx.type,
+                "quantity": tx.quantity,
+                "price": tx.price,
+                "total": tx.total,
+                "timestamp": tx.timestamp.isoformat()
+            } for tx in transactions]
+        except Exception as e:
+            logger.error(f"Error getting transaction history: {str(e)}")
+            raise
+
+    async def get_profit_summary(self, user_id: int, timeframe: str = 'all') -> Dict:
+        """Get profit/loss summary for specified timeframe"""
+        try:
+            # Get transaction summary
+            summary = transaction_crud.get_profit_summary(self.db, user_id, timeframe)
+
+            # Get current portfolio value
+            portfolio = await self.get_portfolio(user_id)
+
+            return {
+                "timeframe": timeframe,
+                "total_invested": summary['total_invested'],
+                "total_current_value": portfolio['summary']['total_current_value'],
+                "total_profit_loss": portfolio['summary']['total_profit_loss'],
+                "total_profit_loss_pct": portfolio['summary']['total_profit_loss_pct'],
+                "total_trades": summary['total_trades'],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error getting profit summary: {str(e)}")
+            raise
+
     async def check_risk_limits(
-        db: Session,
+        self,
+        user_id: int,
         symbol: str,
         quantity: float,
         price: float
@@ -125,27 +306,27 @@ class PortfolioService:
         """Check if trade meets risk management criteria"""
         try:
             # Get portfolio summary
-            portfolio = await PortfolioService.get_portfolio_summary(db)
+            portfolio = await self.get_portfolio_summary(user_id)
 
             # Calculate position size
             position_value = quantity * price
+            portfolio_value = portfolio['total_pnl']
 
             # Get market volatility
             volatility = await market_analyzer.calculate_volatility(symbol)
 
             # Define risk limits
             MAX_POSITION_SIZE = 0.2  # 20% of portfolio
-            MAX_DAILY_LOSS = 0.02    # 2% max daily loss
             MAX_VOLATILITY = 0.5     # 50% annualized volatility
 
             # Check limits
-            position_size_ok = position_value <= (portfolio['total_pnl'] * MAX_POSITION_SIZE)
+            position_size_ok = position_value <= (portfolio_value * MAX_POSITION_SIZE) if portfolio_value > 0 else True
             volatility_ok = volatility <= MAX_VOLATILITY
 
             return {
                 "position_size_ok": position_size_ok,
                 "volatility_ok": volatility_ok,
-                "max_position_size": portfolio['total_pnl'] * MAX_POSITION_SIZE,
+                "max_position_size": portfolio_value * MAX_POSITION_SIZE if portfolio_value > 0 else float('inf'),
                 "current_position_size": position_value,
                 "current_volatility": volatility,
                 "max_volatility": MAX_VOLATILITY,
@@ -155,4 +336,45 @@ class PortfolioService:
             logger.error(f"Error checking risk limits: {str(e)}")
             raise
 
-portfolio_service = PortfolioService()
+    async def get_straddle_positions(self, user_id: int, symbol: Optional[str] = None) -> List[Dict]:
+        """Get all active straddle positions for a user"""
+        try:
+            transactions = transaction_crud.get_straddle_transactions(self.db, user_id, symbol)
+
+            positions = []
+            straddle_pairs = {}
+
+            # Group transactions by symbol and timestamp
+            for tx in transactions:
+                key = f"{tx.symbol}_{tx.timestamp.strftime('%Y%m%d%H%M%S')}"
+                if key not in straddle_pairs:
+                    straddle_pairs[key] = []
+                straddle_pairs[key].append(tx)
+
+            # Process valid straddle pairs
+            for key, pair in straddle_pairs.items():
+                if len(pair) == 2 and pair[0].type != pair[1].type:
+                    # Get current market price
+                    ticker = await exchange_manager.get_ticker(pair[0].symbol)
+                    if not ticker:
+                        continue
+
+                    current_price = ticker['last']
+                    buy_tx = next(tx for tx in pair if tx.type == 'BUY')
+
+                    positions.append({
+                        "position_id": buy_tx.id,
+                        "symbol": buy_tx.symbol,
+                        "quantity": buy_tx.quantity,
+                        "strike_price": buy_tx.price,
+                        "current_price": current_price,
+                        "open_time": buy_tx.timestamp.isoformat()
+                    })
+
+            return positions
+        except Exception as e:
+            logger.error(f"Error getting straddle positions: {str(e)}")
+            return []
+
+# Create singleton instance
+portfolio_service = PortfolioService(None)  # DB session will be injected later

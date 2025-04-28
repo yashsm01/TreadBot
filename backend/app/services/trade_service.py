@@ -1,10 +1,10 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from app.crud.crud_trade import trade as trade_crud
-from app.crud.crud_position import position as position_crud
-from app.schemas import trade as trade_schemas
-from app.schemas import position as position_schemas
-from app.core.logger import logger
+from backend.app.crud.crud_trade import trade as trade_crud
+from backend.app.crud.crud_position import position as position_crud
+from backend.app.schemas import trade as trade_schemas
+from backend.app.schemas import position as position_schemas
+from backend.app.core.logger import logger
 from datetime import datetime
 
 class TradeService:

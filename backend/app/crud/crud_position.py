@@ -1,8 +1,8 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from app.crud.base import CRUDBase
-from app.models.position import Position
-from app.schemas.position import PositionCreate, PositionUpdate
+from backend.app.crud.base import CRUDBase
+from backend.app.models.position import Position
+from backend.app.schemas.position import PositionCreate, PositionUpdate
 
 class CRUDPosition(CRUDBase[Position, PositionCreate, PositionUpdate]):
     def get_by_symbol(

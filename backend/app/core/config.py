@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Database Settings
     POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
-    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "1234")
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
     POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "crypto_trading")
@@ -41,15 +41,15 @@ class Settings(BaseSettings):
 
     # Trading Settings
     PAPER_TRADING: bool = True
-    TRADING_PAIRS: str = "BTCUSDT,ETHUSDT"
-    DEFAULT_TRADING_PAIR: str = "BTCUSDT"
+    TRADING_PAIRS: str = "BTC/USDT,ETH/USDT"
+    DEFAULT_TRADING_PAIR: str = "BTC/USDT"
     DEFAULT_QUANTITY: float = float(os.getenv("DEFAULT_QUANTITY", "0.001"))
     DEFAULT_TP_PCT: float = float(os.getenv("DEFAULT_TP_PCT", "1.0"))
     DEFAULT_SL_PCT: float = float(os.getenv("DEFAULT_SL_PCT", "0.5"))
 
     # Telegram Settings
-    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "7816751552:AAEdH_pquW9QFyr_OghH3RxkDqtOTBT3LsQ")
+    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "505504650")
 
     # Logging Settings
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
