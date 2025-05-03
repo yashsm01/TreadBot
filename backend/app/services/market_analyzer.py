@@ -3,65 +3,91 @@ import pandas as pd
 from datetime import datetime, timedelta
 from backend.app.core.logger import logger
 from backend.app.core.config import settings
-from binance.client import Client
+from backend.app.core.exchange.exchange_manager import exchange_manager
 import numpy as np
 
 class MarketAnalyzer:
     def __init__(self):
-        self.client = Client(settings.BINANCE_API_KEY, settings.BINANCE_API_SECRET)
         self.default_symbol = settings.DEFAULT_TRADING_PAIR
 
     def _format_symbol(self, symbol: str) -> str:
-        """Format symbol to match Binance API requirements"""
+        """Format symbol to match exchange API requirements"""
         if not symbol:
             return self.default_symbol
         # Remove forward slash and convert to uppercase
         return symbol.replace("/", "").upper()
 
-    def get_market_analysis(self, symbol: str = None) -> Dict:
+    async def get_market_analysis(self, symbol: str = None) -> Dict:
         """Get comprehensive market analysis for a symbol"""
         symbol = self._format_symbol(symbol)
         try:
             # Get current market data
-            ticker = self.client.get_ticker(symbol=symbol)
+            ticker = await exchange_manager.get_ticker(symbol)
+            if not ticker:
+                raise Exception(f"Could not get ticker data for {symbol}")
 
-            # Get recent trades
-            trades = self.client.get_recent_trades(symbol=symbol, limit=100)
+            # Get historical data for technical analysis
+            ohlcv = await exchange_manager.get_ohlcv(symbol, timeframe='1h', limit=24)
+            if not ohlcv:
+                raise Exception(f"Could not get OHLCV data for {symbol}")
+
+            # Convert OHLCV data to DataFrame
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
             # Calculate basic metrics
-            current_price = float(ticker['lastPrice'])
-            price_change = float(ticker['priceChange'])
-            price_change_percent = float(ticker['priceChangePercent'])
+            current_price = ticker['last']
+            volume_24h = ticker['volume']
 
-            # Calculate volume metrics
-            volume_24h = float(ticker['volume'])
-            quote_volume_24h = float(ticker['quoteVolume'])
+            # Calculate price change
+            price_change = df['close'].iloc[-1] - df['close'].iloc[0]
+            price_change_percent = (price_change / df['close'].iloc[0]) * 100
+
+            # Calculate volatility
+            volatility = await self.calculate_volatility(symbol)
+
+            # Calculate RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+
+            # Determine trend
+            sma20 = df['close'].rolling(window=20).mean().iloc[-1]
+            trend = "Bullish" if current_price > sma20 else "Bearish"
+
+            # Generate signal
+            signal = "Buy" if (rsi < 30 and trend == "Bullish") else "Sell" if (rsi > 70 and trend == "Bearish") else "Hold"
 
             return {
                 "symbol": symbol,
-                "current_price": current_price,
-                "price_change_24h": price_change,
-                "price_change_percent_24h": price_change_percent,
+                "price": current_price,
+                "price_change_24h": price_change_percent,
                 "volume_24h": volume_24h,
-                "quote_volume_24h": quote_volume_24h,
+                "volatility": volatility * 100,  # Convert to percentage
+                "rsi": rsi,
+                "trend": trend,
+                "signal": signal,
                 "timestamp": datetime.now().isoformat()
             }
         except Exception as e:
-            raise Exception(f"Error analyzing market for {symbol}: {str(e)}")
+            logger.error(f"Error analyzing market for {symbol}: {str(e)}")
+            raise
 
-    def check_trade_viability(self, symbol: str, side: str, quantity: float, price: float) -> Dict:
+    async def check_trade_viability(self, symbol: str, side: str, quantity: float, price: float) -> Dict:
         """Check if a trade is viable based on current market conditions"""
         symbol = self._format_symbol(symbol)
         try:
             # Get current market data
-            ticker = self.client.get_ticker(symbol=symbol)
-            current_price = float(ticker['lastPrice'])
+            ticker = await self.get_market_analysis(symbol)
+            current_price = ticker['price']
 
             # Calculate price deviation
             price_deviation = abs(price - current_price) / current_price * 100
 
             # Get 24h trading volume
-            volume_24h = float(ticker['volume'])
+            volume_24h = ticker['volume_24h']
 
             # Basic viability checks
             is_viable = True
@@ -95,26 +121,18 @@ class MarketAnalyzer:
         interval: str = "5m",
         limit: int = 100
     ) -> pd.DataFrame:
-        """Get historical price data from Binance"""
+        """Get historical price data"""
         try:
-            klines = self.client.get_klines(
-                symbol=symbol.replace("/", ""),
-                interval=interval,
-                limit=limit
-            )
+            ohlcv = await exchange_manager.get_ohlcv(symbol, timeframe=interval, limit=limit)
+            if not ohlcv:
+                raise Exception(f"Could not get OHLCV data for {symbol}")
 
-            df = pd.DataFrame(klines, columns=[
-                'timestamp', 'open', 'high', 'low', 'close',
-                'volume', 'close_time', 'quote_volume', 'trades',
-                'taker_buy_base', 'taker_buy_quote', 'ignore'
+            df = pd.DataFrame(ohlcv, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume'
             ])
 
             # Convert timestamp to datetime
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-
-            # Convert price columns to float
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = df[col].astype(float)
 
             return df
         except Exception as e:
@@ -144,24 +162,61 @@ class MarketAnalyzer:
         """Generate trading signals based on strategy"""
         try:
             # Get current market data
-            current_price = float(self.client.get_symbol_ticker(
-                symbol=symbol.replace("/", "")
-            )['price'])
+            ticker = await exchange_manager.get_ticker(symbol)
+            if not ticker:
+                raise Exception(f"Could not get ticker data for {symbol}")
+            current_price = ticker['last']
 
+            # Get price data for technical analysis
+            df = await self.get_price_data(symbol, interval="1h", limit=24)
+
+            # Calculate volatility
             volatility = await self.calculate_volatility(symbol)
 
-            # Calculate breakout levels based on volatility
-            breakout_pct = volatility / (252 ** 0.5)  # Daily volatility
-            upper_level = current_price * (1 + breakout_pct)
-            lower_level = current_price * (1 - breakout_pct)
+            # Calculate RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+
+            # Calculate support and resistance levels using recent lows and highs
+            support = df['low'].rolling(window=12).min().iloc[-1]
+            resistance = df['high'].rolling(window=12).max().iloc[-1]
+
+            # Generate primary signal based on RSI and volatility
+            if rsi < 30 and volatility < 0.3:  # Low RSI and moderate volatility
+                primary_signal = "Buy"
+                confidence = 80
+            elif rsi > 70 and volatility > 0.4:  # High RSI and high volatility
+                primary_signal = "Sell"
+                confidence = 75
+            else:
+                primary_signal = "Hold"
+                confidence = 60
+
+            # Calculate stop loss and take profit levels
+            if primary_signal == "Buy":
+                stop_loss = support * 0.98  # 2% below support
+                take_profit = current_price * (1 + volatility)  # Use volatility for target
+            elif primary_signal == "Sell":
+                stop_loss = resistance * 1.02  # 2% above resistance
+                take_profit = current_price * (1 - volatility)  # Use volatility for target
+            else:
+                stop_loss = current_price * 0.95  # Default 5% stop loss
+                take_profit = current_price * 1.05  # Default 5% take profit
 
             return {
                 "symbol": symbol,
                 "strategy": strategy,
                 "current_price": current_price,
-                "volatility": volatility,
-                "upper_level": upper_level,
-                "lower_level": lower_level,
+                "primary_signal": primary_signal,
+                "confidence": confidence,
+                "support": support,
+                "resistance": resistance,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "volatility": volatility * 100,  # Convert to percentage
                 "timestamp": datetime.utcnow().isoformat()
             }
         except Exception as e:
@@ -191,6 +246,14 @@ class MarketAnalyzer:
             }
         except Exception as e:
             logger.error(f"Error checking market conditions: {str(e)}")
+            raise
+
+    async def get_trading_pairs(self) -> List[str]:
+        """Get list of available trading pairs"""
+        try:
+            return exchange_manager.get_all_active_pairs()
+        except Exception as e:
+            logger.error(f"Error getting trading pairs: {str(e)}")
             raise
 
 market_analyzer = MarketAnalyzer()

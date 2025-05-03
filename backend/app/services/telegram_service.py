@@ -73,6 +73,10 @@ class TelegramService:
 
             await self.application.initialize()
             await self.application.start()
+
+            # Start polling for updates
+            await self.application.updater.start_polling()
+
             self._initialized = True
             logger.info("Telegram bot initialized successfully")
         except Exception as e:
@@ -84,8 +88,11 @@ class TelegramService:
     async def stop(self):
         """Stop the Telegram bot"""
         if self.application:
+            if self.application.updater:
+                await self.application.updater.stop()
             await self.application.stop()
             logger.info("Telegram bot stopped")
+            self._initialized = False
 
     async def send_notification(
         self,
@@ -122,18 +129,33 @@ class TelegramService:
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         try:
-            user = TelegramUser(
-                telegram_id=update.effective_user.id,
-                chat_id=str(update.effective_chat.id),
-                username=update.effective_user.username
-            )
-            user_crud.create(self.db, obj_in=user)
+            # Check if user already exists
+            existing_user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
 
-            welcome_msg = (
-                "🤖 Welcome to the Crypto Trading Bot!\n\n"
-                "Use /help to see available commands.\n"
-                "Your notifications are now active."
-            )
+            if existing_user:
+                # Update existing user
+                existing_user.is_active = True
+                existing_user.last_interaction = datetime.utcnow()
+                self.db.commit()
+                welcome_msg = (
+                    "🤖 Welcome back to the Crypto Trading Bot!\n\n"
+                    "Use /help to see available commands.\n"
+                    "Your notifications are now active."
+                )
+            else:
+                # Create new user
+                user = TelegramUser(
+                    telegram_id=update.effective_user.id,
+                    chat_id=str(update.effective_chat.id),
+                    username=update.effective_user.username
+                )
+                user_crud.create(self.db, obj_in=user)
+                welcome_msg = (
+                    "🤖 Welcome to the Crypto Trading Bot!\n\n"
+                    "Use /help to see available commands.\n"
+                    "Your notifications are now active."
+                )
+
             await update.message.reply_text(welcome_msg)
         except Exception as e:
             logger.error(f"Error handling start command: {str(e)}")
@@ -258,8 +280,8 @@ Market Information:
 /signals SYMBOL - Get trading signals
 
 Portfolio Management:
-/buy SYMBOL AMOUNT - Place buy order
-/sell SYMBOL AMOUNT - Place sell order
+/buy SYMBOL QUANTITY [PRICE] - Place buy order
+/sell SYMBOL QUANTITY [PRICE] - Place sell order
 /portfolio - View your portfolio
 /history - View trade history
 /profit - View profit/loss
@@ -272,7 +294,8 @@ Straddle Strategy:
 
 Example usage:
 /analysis BTC/USDT
-/buy BTC/USDT 0.1
+/buy BTC/USDT 0.1 50000
+/sell BTC/USDT 0.1
 /straddle ETHUSDT 1
 """
         await update.message.reply_text(help_msg)
@@ -280,35 +303,60 @@ Example usage:
     async def handle_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /buy command"""
         try:
-            if len(context.args) != 2:
-                await update.message.reply_text("❌ Usage: /buy SYMBOL AMOUNT")
+            if len(context.args) not in [2, 3]:
+                await update.message.reply_text("❌ Usage: /buy SYMBOL QUANTITY [PRICE]\nExample: /buy BTC/USDT 0.1 50000")
+                return
+
+            # Get user from database
+            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            if not user:
+                await update.message.reply_text("❌ Please start the bot first with /start")
                 return
 
             symbol = context.args[0].upper()
-            amount = float(context.args[1])
+            quantity = float(context.args[1])
+
+            # Get current market price if price not provided
+            if len(context.args) == 3:
+                price = float(context.args[2])
+            else:
+                market_data = await self.market_analyzer.get_market_analysis(symbol)
+                price = market_data['price']
 
             # Check trade viability
-            viability = await self.market_analyzer.check_trade_viability(symbol, amount, "BUY")
+            viability = await self.market_analyzer.check_trade_viability(
+                symbol=symbol,
+                quantity=quantity,
+                side="BUY",
+                price=price
+            )
+
             if not viability['is_viable']:
-                await update.message.reply_text(f"❌ Trade not viable: {viability['reason']}")
+                reasons = "\n".join(viability['reasons'])
+                await update.message.reply_text(f"❌ Trade not viable:\n{reasons}")
                 return
 
             # Execute buy order
             order = await self.portfolio_service.execute_trade(
                 self.db,
                 symbol=symbol,
-                quantity=amount,
-                side="BUY"
+                quantity=quantity,
+                side="BUY",
+                price=price,
+                user_id=user.id
             )
 
             order_msg = (
                 f"✅ Buy Order Executed\n\n"
                 f"Symbol: {symbol}\n"
-                f"Amount: {amount}\n"
-                f"Price: ${order['price']:,.2f}\n"
+                f"Quantity: {quantity}\n"
+                f"Price: ${price:,.2f}\n"
                 f"Total: ${order['total']:,.2f}"
             )
             await update.message.reply_text(order_msg)
+        except ValueError as e:
+            logger.error(f"Error handling buy command: Invalid number format - {str(e)}")
+            await update.message.reply_text("❌ Invalid number format. Please check quantity and price values.")
         except Exception as e:
             logger.error(f"Error handling buy command: {str(e)}")
             await update.message.reply_text("❌ Failed to execute buy order.")
@@ -316,35 +364,60 @@ Example usage:
     async def handle_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /sell command"""
         try:
-            if len(context.args) != 2:
-                await update.message.reply_text("❌ Usage: /sell SYMBOL AMOUNT")
+            if len(context.args) not in [2, 3]:
+                await update.message.reply_text("❌ Usage: /sell SYMBOL QUANTITY [PRICE]\nExample: /sell BTC/USDT 0.1 50000")
+                return
+
+            # Get user from database
+            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            if not user:
+                await update.message.reply_text("❌ Please start the bot first with /start")
                 return
 
             symbol = context.args[0].upper()
-            amount = float(context.args[1])
+            quantity = float(context.args[1])
+
+            # Get current market price if price not provided
+            if len(context.args) == 3:
+                price = float(context.args[2])
+            else:
+                market_data = await self.market_analyzer.get_market_analysis(symbol)
+                price = market_data['price']
 
             # Check trade viability
-            viability = await self.market_analyzer.check_trade_viability(symbol, amount, "SELL")
+            viability = await self.market_analyzer.check_trade_viability(
+                symbol=symbol,
+                quantity=quantity,
+                side="SELL",
+                price=price
+            )
+
             if not viability['is_viable']:
-                await update.message.reply_text(f"❌ Trade not viable: {viability['reason']}")
+                reasons = "\n".join(viability['reasons'])
+                await update.message.reply_text(f"❌ Trade not viable:\n{reasons}")
                 return
 
             # Execute sell order
             order = await self.portfolio_service.execute_trade(
                 self.db,
                 symbol=symbol,
-                quantity=amount,
-                side="SELL"
+                quantity=quantity,
+                side="SELL",
+                price=price,
+                user_id=user.id
             )
 
             order_msg = (
                 f"✅ Sell Order Executed\n\n"
                 f"Symbol: {symbol}\n"
-                f"Amount: {amount}\n"
-                f"Price: ${order['price']:,.2f}\n"
+                f"Quantity: {quantity}\n"
+                f"Price: ${price:,.2f}\n"
                 f"Total: ${order['total']:,.2f}"
             )
             await update.message.reply_text(order_msg)
+        except ValueError as e:
+            logger.error(f"Error handling sell command: Invalid number format - {str(e)}")
+            await update.message.reply_text("❌ Invalid number format. Please check quantity and price values.")
         except Exception as e:
             logger.error(f"Error handling sell command: {str(e)}")
             await update.message.reply_text("❌ Failed to execute sell order.")
@@ -551,4 +624,5 @@ def create_telegram_service(db: Session) -> TelegramService:
     )
 
 # Initialize as None, will be created properly in main.py
+
 telegram_service = None

@@ -4,13 +4,14 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from ..crud.crud_portfolio import portfolio as portfolio_crud
 from ..crud.crud_portfolio import transaction as transaction_crud
-from ..core.exchange import exchange_manager
+from ..core.exchange.exchange_manager import exchange_manager
 from ..core.logger import logger
 from ..services.market_analyzer import market_analyzer
 
 class PortfolioService:
     def __init__(self, db: Session):
         self.db = db
+        self.exchange_manager = exchange_manager
 
     async def get_portfolio_summary(self, user_id: int) -> Dict:
         """Get overall portfolio summary"""
@@ -44,6 +45,8 @@ class PortfolioService:
             }
         except Exception as e:
             logger.error(f"Error getting portfolio summary: {str(e)}")
+            if hasattr(self.db, 'rollback'):
+                self.db.rollback()
             raise
 
     @staticmethod
@@ -136,112 +139,155 @@ class PortfolioService:
     ) -> Dict:
         """Add a new transaction and update portfolio"""
         try:
-            # Check risk limits
-            risk_check = await self.check_risk_limits(user_id, symbol, quantity, price)
-            if not risk_check['position_size_ok'] or not risk_check['volatility_ok']:
-                raise ValueError("Trade exceeds risk limits")
+            # Start a new transaction
+            if hasattr(self.db, 'begin_nested'):
+                savepoint = self.db.begin_nested()
 
-            # Get or create portfolio
-            portfolio = portfolio_crud.get_by_user_and_symbol(self.db, user_id, symbol)
+            try:
+                # Check risk limits
+                risk_check = await self.check_risk_limits(user_id, symbol, quantity, price)
+                if not risk_check['position_size_ok'] or not risk_check['volatility_ok']:
+                    raise ValueError("Trade exceeds risk limits")
 
-            if not portfolio:
-                if type.upper() == 'SELL':
-                    raise ValueError("Cannot sell without existing position")
-                portfolio = portfolio_crud.create(
+                # Get or create portfolio
+                portfolio = portfolio_crud.get_by_user_and_symbol(self.db, user_id, symbol)
+
+                if not portfolio:
+                    if type.upper() == 'SELL':
+                        raise ValueError("Cannot sell without existing position")
+                    portfolio = portfolio_crud.create(
+                        self.db,
+                        obj_in={
+                            "user_id": user_id,
+                            "symbol": symbol,
+                            "quantity": 0,
+                            "avg_buy_price": price
+                        }
+                    )
+
+                # Validate sell transaction
+                if type.upper() == 'SELL' and quantity > portfolio.quantity:
+                    raise ValueError(f"Insufficient quantity. Available: {portfolio.quantity}")
+
+                # Create transaction
+                transaction = transaction_crud.create_transaction(
                     self.db,
-                    obj_in={
-                        "user_id": user_id,
-                        "symbol": symbol,
-                        "quantity": 0,
-                        "avg_buy_price": price
-                    }
+                    user_id=user_id,
+                    portfolio_id=portfolio.id,
+                    symbol=symbol,
+                    type=type,
+                    quantity=quantity,
+                    price=price
                 )
 
-            # Validate sell transaction
-            if type.upper() == 'SELL' and quantity > portfolio.quantity:
-                raise ValueError(f"Insufficient quantity. Available: {portfolio.quantity}")
+                # Update portfolio
+                portfolio = portfolio_crud.update_portfolio(
+                    self.db,
+                    portfolio=portfolio,
+                    type=type,
+                    quantity=quantity,
+                    price=price
+                )
 
-            # Create transaction
-            transaction = transaction_crud.create_transaction(
-                self.db,
-                user_id=user_id,
-                portfolio_id=portfolio.id,
-                symbol=symbol,
-                type=type,
-                quantity=quantity,
-                price=price
-            )
+                # Commit the transaction
+                if hasattr(self.db, 'commit'):
+                    self.db.commit()
 
-            # Update portfolio
-            portfolio = portfolio_crud.update_portfolio(
-                self.db,
-                portfolio=portfolio,
-                type=type,
-                quantity=quantity,
-                price=price
-            )
+                return {
+                    "status": "success",
+                    "transaction_id": transaction.id,
+                    "type": type,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "price": price,
+                    "total": transaction.total
+                }
 
-            return {
-                "status": "success",
-                "transaction_id": transaction.id,
-                "type": type,
-                "symbol": symbol,
-                "quantity": quantity,
-                "price": price,
-                "total": transaction.total
-            }
+            except Exception as e:
+                if hasattr(self.db, 'rollback'):
+                    self.db.rollback()
+                raise e
+            finally:
+                if hasattr(self.db, 'close'):
+                    self.db.close()
+
         except Exception as e:
             logger.error(f"Error adding transaction: {str(e)}")
+            if hasattr(self.db, 'rollback'):
+                self.db.rollback()
             raise
 
     async def get_portfolio(self, user_id: int) -> Dict:
         """Get user's current portfolio with live prices"""
         try:
-            portfolio_items = portfolio_crud.get_user_portfolio(self.db, user_id)
-
-            result = []
+            portfolio_items = []
             total_invested = 0
             total_current_value = 0
 
-            for item in portfolio_items:
-                # Get current price
-                ticker = await exchange_manager.get_ticker(item.symbol)
-                if not ticker:
-                    logger.error(f"Could not get ticker for {item.symbol}")
-                    continue
+            # Start a new transaction
+            if hasattr(self.db, 'begin_nested'):
+                savepoint = self.db.begin_nested()
 
-                current_price = ticker['last']
-                current_value = item.quantity * current_price
-                invested_value = item.quantity * item.avg_buy_price
-                profit_loss = current_value - invested_value
-                profit_loss_pct = (profit_loss / invested_value) * 100 if invested_value > 0 else 0
+            try:
+                # Get portfolio items with quantity > 0
+                portfolio_items_db = portfolio_crud.get_user_portfolio(self.db, user_id)
 
-                total_invested += invested_value
-                total_current_value += current_value
+                # Initialize exchange manager if needed
+                if not self.exchange_manager._initialized:
+                    await self.exchange_manager.initialize()
 
-                result.append({
-                    "symbol": item.symbol,
-                    "quantity": item.quantity,
-                    "avg_buy_price": item.avg_buy_price,
-                    "current_price": current_price,
-                    "current_value": current_value,
-                    "invested_value": invested_value,
-                    "profit_loss": profit_loss,
-                    "profit_loss_pct": profit_loss_pct,
-                    "last_updated": item.last_updated.isoformat()
-                })
+                for item in portfolio_items_db:
+                    # Get current price
+                    ticker = await self.exchange_manager.get_ticker(item.symbol)
+                    if not ticker:
+                        logger.error(f"Could not get ticker for {item.symbol}")
+                        continue
 
-            return {
-                "portfolio": result,
-                "summary": {
-                    "total_invested": total_invested,
-                    "total_current_value": total_current_value,
-                    "total_profit_loss": total_current_value - total_invested,
-                    "total_profit_loss_pct": ((total_current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
+                    current_price = ticker['last']
+                    current_value = item.quantity * current_price
+                    invested_value = item.quantity * item.avg_buy_price
+                    profit_loss = current_value - invested_value
+                    profit_loss_pct = (profit_loss / invested_value) * 100 if invested_value > 0 else 0
+
+                    total_invested += invested_value
+                    total_current_value += current_value
+
+                    portfolio_items.append({
+                        "symbol": item.symbol,
+                        "quantity": item.quantity,
+                        "avg_buy_price": item.avg_buy_price,
+                        "current_price": current_price,
+                        "current_value": current_value,
+                        "invested_value": invested_value,
+                        "profit_loss": profit_loss,
+                        "profit_loss_pct": profit_loss_pct,
+                        "last_updated": item.last_updated.isoformat()
+                    })
+
+                if hasattr(self.db, 'commit'):
+                    self.db.commit()
+
+                return {
+                    "portfolio": portfolio_items,
+                    "summary": {
+                        "total_invested": total_invested,
+                        "total_current_value": total_current_value,
+                        "total_profit_loss": total_current_value - total_invested,
+                        "total_profit_loss_pct": ((total_current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
+                    }
                 }
-            }
+            except Exception as e:
+                if hasattr(self.db, 'rollback'):
+                    self.db.rollback()
+                raise e
+            finally:
+                if hasattr(self.db, 'close'):
+                    self.db.close()
+
         except Exception as e:
             logger.error(f"Error getting portfolio: {str(e)}")
+            if hasattr(self.db, 'rollback'):
+                self.db.rollback()
             raise
 
     async def get_transaction_history(
@@ -344,6 +390,10 @@ class PortfolioService:
             positions = []
             straddle_pairs = {}
 
+            # Initialize exchange manager if needed
+            if not self.exchange_manager._initialized:
+                await self.exchange_manager.initialize()
+
             # Group transactions by symbol and timestamp
             for tx in transactions:
                 key = f"{tx.symbol}_{tx.timestamp.strftime('%Y%m%d%H%M%S')}"
@@ -355,7 +405,7 @@ class PortfolioService:
             for key, pair in straddle_pairs.items():
                 if len(pair) == 2 and pair[0].type != pair[1].type:
                     # Get current market price
-                    ticker = await exchange_manager.get_ticker(pair[0].symbol)
+                    ticker = await self.exchange_manager.get_ticker(pair[0].symbol)
                     if not ticker:
                         continue
 
@@ -375,6 +425,43 @@ class PortfolioService:
         except Exception as e:
             logger.error(f"Error getting straddle positions: {str(e)}")
             return []
+
+    async def execute_trade(
+        self,
+        db: Session,
+        symbol: str,
+        quantity: float,
+        side: str,
+        price: float,
+        user_id: int
+    ) -> Dict:
+        """Execute a trade and update portfolio"""
+        try:
+            # Validate side
+            if side.upper() not in ["BUY", "SELL"]:
+                raise ValueError("Invalid trade side. Must be 'BUY' or 'SELL'")
+
+            # Add transaction
+            transaction = await self.add_transaction(
+                user_id=user_id,
+                symbol=symbol,
+                type=side.upper(),
+                quantity=quantity,
+                price=price
+            )
+
+            return {
+                "status": "success",
+                "symbol": symbol,
+                "side": side.upper(),
+                "quantity": quantity,
+                "price": price,
+                "total": transaction["total"],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error executing trade: {str(e)}")
+            raise
 
 # Create singleton instance
 portfolio_service = PortfolioService(None)  # DB session will be injected later

@@ -12,6 +12,13 @@ from .services.scheduler_service import scheduler_service
 from .services.portfolio_service import portfolio_service
 from .core.exchange.exchange_manager import exchange_manager
 
+# Import all models to ensure they are registered with Base
+from .models.portfolio import Portfolio, Transaction
+from .models.trade import Trade
+from .models.position import Position
+from .models.crypto import Cryptocurrency, CryptoPair
+from .models.telegram import TelegramUser, TelegramNotification
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +57,10 @@ async def startup_event():
     """Initialize services on startup"""
     try:
         logger.info("Starting application initialization...")
+
+        # Force drop all tables and recreate them
+        logger.info("Dropping all tables...")
+        Base.metadata.drop_all(bind=engine)
 
         # Create database tables
         logger.info("Creating database tables...")
@@ -91,25 +102,29 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
+    """Cleanup on application shutdown"""
     try:
         logger.info("Starting application shutdown...")
 
         # Stop scheduler
         logger.info("Stopping scheduler...")
         await scheduler_service.stop()
+        logger.info("Scheduler stopped successfully")
 
         # Stop Telegram bot
         logger.info("Stopping Telegram bot...")
         await telegram_service.stop()
+        logger.info("Telegram bot stopped")
 
         # Close exchange connection
         logger.info("Closing exchange connection...")
         await exchange_manager.close()
+        logger.info("Exchange connection closed")
 
         logger.info("Application shutdown completed successfully")
     except Exception as e:
         logger.error(f"Error during shutdown: {str(e)}")
+        raise
 
 @app.get("/health")
 async def health_check():
