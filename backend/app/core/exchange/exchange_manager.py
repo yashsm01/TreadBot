@@ -4,6 +4,7 @@ from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from ...services.crypto_service import crypto_service
 from ...core.config import settings
+from ...core.logger import logger
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,14 @@ class ExchangeManager:
             await self.exchange.load_markets()
             self._initialized = True
             logger.info(f"Exchange {self.exchange_id} initialized successfully")
+        except ccxt.NetworkError as e:
+            logger.error(f"Network error initializing exchange: {str(e)}")
+            raise
+        except ccxt.ExchangeError as e:
+            logger.error(f"Exchange error during initialization: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Failed to initialize exchange: {str(e)}")
+            logger.error(f"Unexpected error initializing exchange: {str(e)}")
             raise
 
     def get_all_active_pairs(self) -> List[str]:
@@ -83,27 +90,76 @@ class ExchangeManager:
 
         Returns:
             Optional[Dict]: Ticker information or None if error occurs
+
+        Raises:
+            ccxt.NetworkError: If there's a network connectivity issue
+            ccxt.ExchangeError: If the exchange returns an error
+            Exception: For unexpected errors
         """
         if not self._initialized:
             await self.initialize()
 
         try:
-            if not await self.validate_trading_pair(symbol):
-                logger.warning(f"Invalid or inactive trading pair: {symbol}")
-                return None
+            # Format symbol if needed (e.g., convert BTCUSDT to BTC/USDT)
+            if '/' not in symbol:
+                formatted_symbol = f"{symbol[:-4]}/{symbol[-4:]}" if symbol.endswith('USDT') else symbol
+            else:
+                formatted_symbol = symbol
 
-            ticker = await self.exchange.fetch_ticker(symbol)
+            # Validate the trading pair
+            if not await self.validate_trading_pair(formatted_symbol):
+                logger.warning(f"Invalid or inactive trading pair: {formatted_symbol}")
+                return {
+                    'error': True,
+                    'message': f"Invalid or inactive trading pair: {formatted_symbol}",
+                    'symbol': formatted_symbol
+                }
+
+            ticker = await self.exchange.fetch_ticker(formatted_symbol)
+            if not ticker:
+                logger.warning(f"No ticker data available for {formatted_symbol}")
+                return {
+                    'error': True,
+                    'message': f"No ticker data available for {formatted_symbol}",
+                    'symbol': formatted_symbol
+                }
+
             return {
-                'symbol': symbol,
+                'error': False,
+                'symbol': formatted_symbol,
                 'last': ticker['last'],
                 'bid': ticker['bid'],
                 'ask': ticker['ask'],
                 'volume': ticker['baseVolume'],
                 'timestamp': ticker['timestamp']
             }
+        except ccxt.NetworkError as e:
+            error_msg = f"Network error fetching ticker for {symbol}: {str(e)}"
+            logger.error(error_msg)
+            return {
+                'error': True,
+                'message': error_msg,
+                'symbol': symbol,
+                'error_type': 'network'
+            }
+        except ccxt.ExchangeError as e:
+            error_msg = f"Exchange error fetching ticker for {symbol}: {str(e)}"
+            logger.error(error_msg)
+            return {
+                'error': True,
+                'message': error_msg,
+                'symbol': symbol,
+                'error_type': 'exchange'
+            }
         except Exception as e:
-            logger.error(f"Error fetching ticker for {symbol}: {str(e)}")
-            return None
+            error_msg = f"Unexpected error fetching ticker for {symbol}: {str(e)}"
+            logger.error(error_msg)
+            return {
+                'error': True,
+                'message': error_msg,
+                'symbol': symbol,
+                'error_type': 'unknown'
+            }
 
     async def get_ohlcv(
         self,

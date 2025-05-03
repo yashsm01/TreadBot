@@ -225,13 +225,13 @@ class TelegramService:
 
             analysis_msg = (
                 f"📊 Market Analysis for {symbol}\n\n"
-                f"Price: ${analysis['price']:,.2f}\n"
-                f"24h Change: {analysis['price_change_24h']:,.2f}%\n"
+                f"Price: ${analysis['current_price']:,.2f}\n"
+                # f"24h Change: {analysis['price_change_24h']:,.2f}%\n"
                 f"Volume: ${analysis['volume_24h']:,.2f}\n"
                 f"Volatility: {analysis['volatility']:,.2f}%\n"
-                f"RSI: {analysis['rsi']:,.2f}\n"
-                f"Trend: {analysis['trend']}\n"
-                f"Signal: {analysis['signal']}"
+                # f"RSI: {analysis['rsi']:,.2f}\n"
+                # f"Trend: {analysis['trend']}\n"
+                # f"Signal: {analysis['signal']}"
             )
             await update.message.reply_text(analysis_msg)
         except Exception as e:

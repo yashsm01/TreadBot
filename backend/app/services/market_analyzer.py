@@ -3,9 +3,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import platform
 import asyncio
-from backend.app.core.logger import logger
-from backend.app.core.config import settings
-from backend.app.core.exchange.exchange_manager import exchange_manager
+from ..core.logger import logger
+from ..core.config import settings
+from ..core.exchange.exchange_manager import exchange_manager
 import numpy as np
 
 # Set event loop policy for Windows
@@ -20,77 +20,69 @@ class MarketAnalyzer:
         """Format symbol to match exchange API requirements"""
         if not symbol:
             return self.default_symbol
+
         # Ensure symbol is in correct format (e.g., "BTC/USDT")
         symbol = symbol.upper()
         if "/" not in symbol:
-            # Convert BTCUSDT to BTC/USDT format
             if "USDT" in symbol:
-                base = symbol.replace("USDT", "")
-                quote = "USDT"
-            else:
-                # Default to USDT as quote currency if not specified
-                base = symbol
-                quote = "USDT"
-            symbol = f"{base}/{quote}"
+                base = symbol[:-4]  # Remove USDT
+                quote = symbol[-4:]  # USDT
+                return f"{base}/{quote}"
         return symbol
 
     async def get_market_analysis(self, symbol: str = None) -> Dict:
-        """Get comprehensive market analysis for a symbol"""
-        symbol = self._format_symbol(symbol)
+        """
+        Get market analysis for a trading pair.
+
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT' or 'BTCUSDT')
+
+        Returns:
+            Dict: Market analysis results with error information if applicable
+        """
         try:
-            # Get current market data
-            ticker = await exchange_manager.get_ticker(symbol)
-            if not ticker:
-                raise Exception(f"Could not get ticker data for {symbol}")
+            symbol = self._format_symbol(symbol)
 
-            # Get historical data for technical analysis
-            ohlcv = await exchange_manager.get_ohlcv(symbol, timeframe='1h', limit=24)
-            if not ohlcv:
-                raise Exception(f"Could not get OHLCV data for {symbol}")
+            # Get current ticker data
+            ticker_data = await exchange_manager.get_ticker(symbol)
+            if ticker_data.get('error'):
+                logger.error(f"Failed to get ticker data: {ticker_data['message']}")
+                return {
+                    'error': True,
+                    'message': ticker_data['message'],
+                    'symbol': symbol
+                }
 
-            # Convert OHLCV data to DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # Get price data for technical analysis
+            price_data = await self.get_price_data(symbol)
+            if isinstance(price_data, dict) and price_data.get('error'):
+                return price_data
 
-            # Calculate basic metrics
-            current_price = ticker['last']
-            volume_24h = ticker['volume']
-
-            # Calculate price change
-            price_change = df['close'].iloc[-1] - df['close'].iloc[0]
-            price_change_percent = (price_change / df['close'].iloc[0]) * 100
-
-            # Calculate volatility
+            # Calculate market indicators
             volatility = await self.calculate_volatility(symbol)
-
-            # Calculate RSI
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs)).iloc[-1]
-
-            # Determine trend
-            sma20 = df['close'].rolling(window=20).mean().iloc[-1]
-            trend = "Bullish" if current_price > sma20 else "Bearish"
-
-            # Generate signal
-            signal = "Buy" if (rsi < 30 and trend == "Bullish") else "Sell" if (rsi > 70 and trend == "Bearish") else "Hold"
+            trading_signal = await self.get_trading_signal(symbol)
+            market_conditions = await self.check_market_conditions(symbol)
 
             return {
-                "symbol": symbol,
-                "price": current_price,
-                "price_change_24h": price_change_percent,
-                "volume_24h": volume_24h,
-                "volatility": volatility * 100,  # Convert to percentage
-                "rsi": rsi,
-                "trend": trend,
-                "signal": signal,
-                "timestamp": datetime.now().isoformat()
+                'error': False,
+                'symbol': symbol,
+                'current_price': ticker_data['last'],
+                'bid': ticker_data['bid'],
+                'ask': ticker_data['ask'],
+                'volume_24h': ticker_data['volume'],
+                'volatility': volatility,
+                'trading_signal': trading_signal,
+                'market_conditions': market_conditions,
+                'timestamp': datetime.fromtimestamp(ticker_data['timestamp'] / 1000).isoformat()
             }
         except Exception as e:
-            logger.error(f"Error analyzing market for {symbol}: {str(e)}")
-            raise
+            error_msg = f"Error performing market analysis for {symbol}: {str(e)}"
+            logger.error(error_msg)
+            return {
+                'error': True,
+                'message': error_msg,
+                'symbol': symbol
+            }
 
     async def check_trade_viability(self, symbol: str, side: str, quantity: float, price: float) -> Dict:
         """Check if a trade is viable based on current market conditions"""
@@ -98,7 +90,7 @@ class MarketAnalyzer:
         try:
             # Get current market data
             ticker = await self.get_market_analysis(symbol)
-            current_price = ticker['price']
+            current_price = ticker['current_price']
 
             # Calculate price deviation
             price_deviation = abs(price - current_price) / current_price * 100
