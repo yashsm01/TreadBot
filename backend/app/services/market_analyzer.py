@@ -1,10 +1,16 @@
 from typing import Dict, Optional, List
 import pandas as pd
 from datetime import datetime, timedelta
+import platform
+import asyncio
 from backend.app.core.logger import logger
 from backend.app.core.config import settings
 from backend.app.core.exchange.exchange_manager import exchange_manager
 import numpy as np
+
+# Set event loop policy for Windows
+if platform.system() == "Windows":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 class MarketAnalyzer:
     def __init__(self):
@@ -14,8 +20,19 @@ class MarketAnalyzer:
         """Format symbol to match exchange API requirements"""
         if not symbol:
             return self.default_symbol
-        # Remove forward slash and convert to uppercase
-        return symbol.replace("/", "").upper()
+        # Ensure symbol is in correct format (e.g., "BTC/USDT")
+        symbol = symbol.upper()
+        if "/" not in symbol:
+            # Convert BTCUSDT to BTC/USDT format
+            if "USDT" in symbol:
+                base = symbol.replace("USDT", "")
+                quote = "USDT"
+            else:
+                # Default to USDT as quote currency if not specified
+                base = symbol
+                quote = "USDT"
+            symbol = f"{base}/{quote}"
+        return symbol
 
     async def get_market_analysis(self, symbol: str = None) -> Dict:
         """Get comprehensive market analysis for a symbol"""

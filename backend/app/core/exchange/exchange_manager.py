@@ -3,6 +3,7 @@ import logging
 from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from ...services.crypto_service import crypto_service
+from ...core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,15 @@ class ExchangeManager:
             self.exchange = exchange_class({
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'spot'
-                }
+                    'defaultType': 'spot',
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000
+                },
+                'timeout': 30000,
+                'apiKey': settings.BINANCE_API_KEY,
+                'secret': settings.BINANCE_SECRET_KEY
             })
+            await self.exchange.load_markets()
             self._initialized = True
             logger.info(f"Exchange {self.exchange_id} initialized successfully")
         except Exception as e:

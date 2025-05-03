@@ -13,7 +13,11 @@ class Cryptocurrency(Base):
     volume_24h = Column(Float)
     price_change_24h = Column(Float)
     price_change_percentage_24h = Column(Float)
+    min_quantity = Column(Float)
+    price_precision = Column(Integer)
+    quantity_precision = Column(Integer)
     last_updated = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
     is_active = Column(Boolean, default=True)
 
     def __repr__(self):

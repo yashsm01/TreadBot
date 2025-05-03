@@ -22,6 +22,14 @@ class CryptoService:
             # Process only USDT pairs
             usdt_markets = [m for m in markets if m['quote'] == 'USDT']
 
+            # Create a dictionary to store unique market data by symbol
+            unique_markets = {}
+            for market in usdt_markets:
+                symbol = f"{market['base']}/USDT"
+                # Only keep the first occurrence of each symbol
+                if symbol not in unique_markets:
+                    unique_markets[symbol] = market
+
             # Get existing symbols
             existing_cryptos = {
                 crypto.symbol: crypto
@@ -31,9 +39,8 @@ class CryptoService:
             # Track processed symbols
             processed_symbols = set()
 
-            for market in usdt_markets:
+            for symbol, market in unique_markets.items():
                 try:
-                    symbol = f"{market['base']}/USDT"
                     processed_symbols.add(symbol)
 
                     crypto_data = {
