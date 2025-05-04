@@ -709,13 +709,13 @@ Example usage:
                 change_symbol = "📈" if entry.get('price_change', 0) >= 0 else "📉"
                 history_msg += (
                     f"\n⏰ {time_str}\n"
-                    f"Close: ${entry['close']:,.2f}\n"
-                    f"High: ${entry['high']:,.2f}\n"
-                    f"Low: ${entry['low']:,.2f}\n"
+                    f"Close: ${entry['close']:,.5f}\n"
+                    f"High: ${entry['high']:,.5f}\n"
+                    f"Low: ${entry['low']:,.5f}\n"
                     f"Volume: {entry['volume']:,.3f}\n"
                 )
                 if entry.get('price_change', 0) != 0:
-                    history_msg += f"Change: {change_symbol} ${entry['price_change']:+,.2f} ({entry['price_change_percent']:+.2f}%)\n"
+                    history_msg += f"Change: {change_symbol} ${entry['price_change']:+,.5f} ({entry['price_change_percent']:+.3f}%)\n"
                 history_msg += f"Trades: {entry['number_of_trades']:,}\n"
                 history_msg += "➖➖➖➖➖➖➖➖➖➖\n"
 
@@ -725,11 +725,11 @@ Example usage:
             stats = history['data']['statistics']
             stats_msg = (
                 "📈 Statistics Summary:\n\n"
-                f"Mean Price: ${stats['mean_price']:,.2f}\n"
-                f"Highest Price: ${stats['max_price']:,.2f}\n"
-                f"Lowest Price: ${stats['min_price']:,.2f}\n"
-                f"Total Change: ${stats['total_change']:+,.2f} ({stats['total_change_percent']:+.2f}%)\n"
-                f"Volatility: {stats['volatility']:.2f}%\n\n"
+                f"Mean Price: ${stats['mean_price']:,.5f}\n"
+                f"Highest Price: ${stats['max_price']:,.5f}\n"
+                f"Lowest Price: ${stats['min_price']:,.5f}\n"
+                f"Total Change: ${stats['total_change']:+,.5f} ({stats['total_change_percent']:+.3f}%)\n"
+                f"Volatility: {stats['volatility']:.3f}%\n\n"
                 f"Last Updated: {datetime.fromtimestamp(history['data']['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}"
             )
 

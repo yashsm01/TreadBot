@@ -14,6 +14,7 @@ class BinanceHelper:
         """
         self.client = Client(api_key, api_secret)
 
+    # Get current price for a given trading pair
     async def get_price(self, symbol: str = "BTCUSDT") -> Dict[str, Union[str, float, int]]:
         """
         Get current price for a given trading pair
@@ -37,6 +38,7 @@ class BinanceHelper:
             logger.error(f"Error fetching price for {symbol}: {str(e)}")
             raise
 
+    # Get current prices for multiple trading pairs
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, Dict[str, Union[float, int]]]:
         """
         Get current prices for multiple trading pairs
@@ -66,6 +68,7 @@ class BinanceHelper:
             logger.error(f"Error fetching prices: {str(e)}")
             raise
 
+    # Get 24-hour price statistics for a symbol
     async def get_24h_stats(self, symbol: str) -> Dict[str, Union[str, float]]:
         """
         Get 24-hour price statistics for a symbol
@@ -92,6 +95,7 @@ class BinanceHelper:
             logger.error(f"Error fetching 24h stats for {symbol}: {str(e)}")
             raise
 
+    # Get 5-minute candlestick statistics for a symbol
     async def get_5m_stats(self, symbol: str) -> Dict[str, Union[str, float, int]]:
         """
         Get 5-minute candlestick statistics for a symbol
@@ -112,7 +116,7 @@ class BinanceHelper:
             if not klines:
                 raise BinanceAPIException("No kline data available")
 
-            # Unpack the kline data
+              # Unpack the kline data
             # [0]Open time, [1]Open, [2]High, [3]Low, [4]Close, [5]Volume, [6]Close time
             kline = klines[0]
 
@@ -139,58 +143,7 @@ class BinanceHelper:
             logger.error(f"Error processing 5m kline data for {symbol}: {str(e)}")
             raise BinanceAPIException(f"Error processing kline data: {str(e)}")
 
-    def _format_timestamp(self, timestamp_ms: int) -> str:
-        """Convert millisecond timestamp to readable format"""
-        dt = datetime.fromtimestamp(timestamp_ms / 1000)
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    def format_price_history(self, history_data: Dict) -> str:
-        """
-        Format price history data into a readable string
-        Args:
-            history_data: Price history data dictionary
-        Returns:
-            Formatted string with price history information
-        """
-        symbol = history_data["symbol"]
-        interval = history_data["interval"]
-
-        # Format header
-        formatted = f"📊 Price History for {symbol} ({interval} intervals)\n"
-        formatted += "=" * 50 + "\n\n"
-
-        # Format each interval
-        formatted += "🕒 Historical Prices:\n"
-        formatted += "-" * 30 + "\n"
-        for entry in history_data["history"]:
-            time_str = self._format_timestamp(entry["timestamp"])
-            formatted += f"Time: {time_str}\n"
-            formatted += f"Close: ${entry['close']:,.2f}\n"
-            formatted += f"High: ${entry['high']:,.2f}\n"
-            formatted += f"Low: ${entry['low']:,.2f}\n"
-            formatted += f"Volume: {entry['volume']:,.3f}\n"
-            if entry['price_change'] != 0:  # Skip for first entry
-                change_symbol = "📈" if entry['price_change'] > 0 else "📉"
-                formatted += f"Change: {change_symbol} ${entry['price_change']:+,.2f} ({entry['price_change_percent']:+.2f}%)\n"
-            formatted += f"Trades: {entry['number_of_trades']:,}\n"
-            formatted += "-" * 30 + "\n"
-
-        # Format statistics
-        stats = history_data["statistics"]
-        formatted += "\n📈 Statistics:\n"
-        formatted += "-" * 30 + "\n"
-        formatted += f"Mean Price: ${stats['mean_price']:,.2f}\n"
-        formatted += f"Max Price: ${stats['max_price']:,.2f}\n"
-        formatted += f"Min Price: ${stats['min_price']:,.2f}\n"
-        formatted += f"Total Change: ${stats['total_change']:+,.2f} ({stats['total_change_percent']:+.2f}%)\n"
-        formatted += f"Volatility: {stats['volatility']:.2f}%\n"
-
-        # Add timestamp
-        update_time = self._format_timestamp(history_data["timestamp"])
-        formatted += f"\nLast Updated: {update_time}"
-
-        return formatted
-
+    # Get historical 5-minute price data with variations
     async def get_5m_price_history(self, symbol: str, intervals: int = 5) -> Dict[str, Union[Dict, List]]:
         """
         Get historical 5-minute price data with variations
@@ -276,6 +229,13 @@ class BinanceHelper:
         except (IndexError, ValueError) as e:
             logger.error(f"Error processing 5m price history for {symbol}: {str(e)}")
             raise BinanceAPIException(f"Error processing price history: {str(e)}")
+
+
+    # Helper function to format timestamp
+    def _format_timestamp(self, timestamp_ms: int) -> str:
+        """Convert millisecond timestamp to readable format"""
+        dt = datetime.fromtimestamp(timestamp_ms / 1000)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 # Create singleton instance
 binance_helper = BinanceHelper()
