@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     TRADE_FEE: float = 0.001  # 0.1%
 
     # Telegram Settings
-    TELEGRAM_BOT_TOKEN: Optional[str] = None
-    TELEGRAM_CHAT_ID: Optional[str] = None
+    TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "7816751552:AAEdH_pquW9QFyr_OghH3RxkDqtOTBT3LsQ")
+    TELEGRAM_CHAT_ID: Optional[str] = os.getenv("TELEGRAM_CHAT_ID", "505504650")
 
     # Logging Settings
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')

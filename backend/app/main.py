@@ -59,12 +59,12 @@ async def startup_event():
         logger.info("Starting application initialization...")
 
         # Force drop all tables and recreate them
-        logger.info("Dropping all tables...")
-        Base.metadata.drop_all(bind=engine)
+        # logger.info("Dropping all tables...")
+        # Base.metadata.drop_all(bind=engine)
 
         # Create database tables
-        logger.info("Creating database tables...")
-        Base.metadata.create_all(bind=engine)
+        # logger.info("Creating database tables...")
+        # Base.metadata.create_all(bind=engine)
 
         # Initialize database session
         db = SessionLocal()
