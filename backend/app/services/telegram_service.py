@@ -73,8 +73,9 @@ class TelegramService:
             # Testing commands
             self.application.add_handler(CommandHandler("price", self.get_price))
             self.application.add_handler(CommandHandler("prices", self.get_multiple_prices))
-            self.application.add_handler(CommandHandler("stats", self.get_24h_stats))
-
+            self.application.add_handler(CommandHandler("24hstats", self.get_24h_stats))
+            self.application.add_handler(CommandHandler("5mstats", self.get_5m_stats))
+            self.application.add_handler(CommandHandler("5mpricehistory", self.get_5m_price_history))
             # Add fallback handler for unknown commands
             self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
 
@@ -302,8 +303,9 @@ Straddle Strategy:
 Testing Commands:
 /price SYMBOL - Get price of a symbol
 /prices SYMBOL1 SYMBOL2 SYMBOL3 - Get prices of multiple symbols
-/stats SYMBOL - Get 24h stats of a symbol
-
+/24hstats SYMBOL - Get 24h stats of a symbol
+/5mstats SYMBOL - Get 5m stats of a symbol
+/5mpricehistory SYMBOL - Get 5m price history of a symbol
 Example usage:
 /analysis BTC/USDT
 /buy BTC/USDT 0.1 50000
@@ -662,6 +664,80 @@ Example usage:
         except Exception as e:
             logger.error(f"Error handling stats command: {str(e)}")
             await update.message.reply_text("❌ Failed to get stats information.")
+
+    async def get_5m_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /5mstats command to get 5m stats
+        Usage: /5mstats BTC/USDT
+        """
+        try:
+            symbol = context.args[0].upper()
+            stats = await self.binance_helper.get_5m_stats(symbol)
+            await update.message.reply_text(f"5m stats for {symbol}:\n"
+                                            f"Open: ${stats['open']}\n"
+                                            f"High: ${stats['high']}\n"
+                                            f"Low: ${stats['low']}\n"
+                                            f"Close: ${stats['close']}\n"
+                                            f"Volume: ${stats['volume']}\n"
+                                            f"Price Change: ${stats['price_change']} ({stats['price_change_percent']}%)\n"
+                                            f"Number of Trades: {stats['number_of_trades']}\n"
+                                            f"Taker Buy Volume: ${stats['taker_buy_volume']}\n"
+                                            f"Taker Buy Quote Volume: ${stats['taker_buy_quote_volume']}")
+        except Exception as e:
+            logger.error(f"Error handling 5m stats command: {str(e)}")
+            await update.message.reply_text("❌ Failed to get 5m stats information.")
+
+    async def get_5m_price_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /5mpricehistory command to get 5m price history
+        Usage: /5mpricehistory BTC/USDT
+        """
+        try:
+            if not context.args or len(context.args) != 1:
+                await update.message.reply_text("❌ Usage: /5mpricehistory SYMBOL\nExample: /5mpricehistory BTC/USDT")
+                return
+
+            symbol = context.args[0].upper()
+            history = await self.binance_helper.get_5m_price_history(symbol)
+
+            # Format the message in parts to avoid length issues
+            header = f"📊 Price History for {symbol} (5m intervals)\n\n"
+            await update.message.reply_text(header)
+
+            # Send price history entries
+            history_msg = "🕒 Historical Prices:\n"
+            for entry in history['data']['history']:
+                time_str = datetime.fromtimestamp(entry['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                change_symbol = "📈" if entry.get('price_change', 0) >= 0 else "📉"
+                history_msg += (
+                    f"\n⏰ {time_str}\n"
+                    f"Close: ${entry['close']:,.2f}\n"
+                    f"High: ${entry['high']:,.2f}\n"
+                    f"Low: ${entry['low']:,.2f}\n"
+                    f"Volume: {entry['volume']:,.3f}\n"
+                )
+                if entry.get('price_change', 0) != 0:
+                    history_msg += f"Change: {change_symbol} ${entry['price_change']:+,.2f} ({entry['price_change_percent']:+.2f}%)\n"
+                history_msg += f"Trades: {entry['number_of_trades']:,}\n"
+                history_msg += "➖➖➖➖➖➖➖➖➖➖\n"
+
+            await update.message.reply_text(history_msg)
+
+            # Send statistics
+            stats = history['data']['statistics']
+            stats_msg = (
+                "📈 Statistics Summary:\n\n"
+                f"Mean Price: ${stats['mean_price']:,.2f}\n"
+                f"Highest Price: ${stats['max_price']:,.2f}\n"
+                f"Lowest Price: ${stats['min_price']:,.2f}\n"
+                f"Total Change: ${stats['total_change']:+,.2f} ({stats['total_change_percent']:+.2f}%)\n"
+                f"Volatility: {stats['volatility']:.2f}%\n\n"
+                f"Last Updated: {datetime.fromtimestamp(history['data']['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            await update.message.reply_text(stats_msg)
+
+        except Exception as e:
+            logger.error(f"Error handling 5m price history command: {str(e)}")
+            await update.message.reply_text("❌ Failed to get 5m price history information.")
 
 def create_telegram_service(db: Session) -> TelegramService:
     """Create a new instance of TelegramService with all required dependencies"""
