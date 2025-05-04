@@ -17,7 +17,7 @@ from ..crud.crud_telegram import telegram_notification as notification_crud
 from ..services.market_analyzer import MarketAnalyzer
 from ..services.portfolio_service import PortfolioService
 from ..services.straddle_service import StraddleService
-
+from ..services.helper.binance_helper import BinanceHelper
 logger = logging.getLogger(__name__)
 
 class TelegramService:
@@ -26,12 +26,14 @@ class TelegramService:
         db: Session,
         market_analyzer: MarketAnalyzer,
         portfolio_service: PortfolioService,
-        straddle_service: StraddleService
+        straddle_service: StraddleService,
+        binance_helper: BinanceHelper
     ):
         self.db = db
         self.market_analyzer = market_analyzer
         self.portfolio_service = portfolio_service
         self.straddle_service = straddle_service
+        self.binance_helper = binance_helper
         self.application = None
         self._initialized = False
 
@@ -67,6 +69,11 @@ class TelegramService:
             self.application.add_handler(CommandHandler("update_straddle", self.handle_update_straddle))
             self.application.add_handler(CommandHandler("close_straddle", self.handle_close_straddle))
             self.application.add_handler(CommandHandler("straddles", self.get_straddle_positions))
+
+            # Testing commands
+            self.application.add_handler(CommandHandler("price", self.get_price))
+            self.application.add_handler(CommandHandler("prices", self.get_multiple_prices))
+            self.application.add_handler(CommandHandler("stats", self.get_24h_stats))
 
             # Add fallback handler for unknown commands
             self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
@@ -291,6 +298,11 @@ Straddle Strategy:
 /update_straddle ID PARAMS - Update straddle
 /close_straddle ID - Close straddle position
 /straddles - View straddle positions
+
+Testing Commands:
+/price SYMBOL - Get price of a symbol
+/prices SYMBOL1 SYMBOL2 SYMBOL3 - Get prices of multiple symbols
+/stats SYMBOL - Get 24h stats of a symbol
 
 Example usage:
 /analysis BTC/USDT
@@ -610,17 +622,59 @@ Example usage:
             "❌ Unknown command. Use /help to see available commands."
         )
 
+    async def get_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /prices command to get prices
+        Usage: /prices BTC/USDT
+        """
+        try:
+            symbol = context.args[0].upper()
+            price = await self.binance_helper.get_price(symbol)
+            await update.message.reply_text(f"Current price of {symbol}: ${price['price']}")
+        except Exception as e:
+            logger.error(f"Error handling price command: {str(e)}")
+            await update.message.reply_text("❌ Failed to get price information.")
+
+    async def get_multiple_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /prices command to get multiple prices
+        Usage: /prices BTC/USDT ETH/USDT SOL/USDT
+        """
+        try:
+            symbols = context.args
+            prices = await self.binance_helper.get_multiple_prices(symbols)
+            for symbol, price_data in prices.items():
+                await update.message.reply_text(f"{symbol}: ${price_data['price']} (Updated {datetime.fromtimestamp(price_data['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')})")
+        except Exception as e:
+            logger.error(f"Error handling prices command: {str(e)}")
+            await update.message.reply_text("❌ Failed to get prices information.")
+
+    async def get_24h_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /stats command to get 24h stats
+        Usage: /stats BTC/USDT
+        """
+        try:
+            symbol = context.args[0].upper()
+            stats = await self.binance_helper.get_24h_stats(symbol)
+            await update.message.reply_text(f"24h stats for {symbol}:\n"
+                                            f"High: ${stats['high']}\n"
+                                            f"Low: ${stats['low']}\n"
+                                            f"Volume: ${stats['volume']}\n"
+                                            f"Price Change: ${stats['price_change']} ({stats['price_change_percent']}%)")
+        except Exception as e:
+            logger.error(f"Error handling stats command: {str(e)}")
+            await update.message.reply_text("❌ Failed to get stats information.")
+
 def create_telegram_service(db: Session) -> TelegramService:
     """Create a new instance of TelegramService with all required dependencies"""
     market_analyzer = MarketAnalyzer()
     portfolio_service = PortfolioService(db)
     straddle_service = StraddleService(db)
-
+    binance_helper = BinanceHelper()
     return TelegramService(
         db=db,
         market_analyzer=market_analyzer,
         portfolio_service=portfolio_service,
-        straddle_service=straddle_service
+        straddle_service=straddle_service,
+        binance_helper=binance_helper
     )
 
 # Initialize as None, will be created properly in main.py
