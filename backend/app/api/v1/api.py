@@ -1,8 +1,34 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import trades, positions, strategy
+from app.api.v1.endpoints import (
+    trade_routes,
+    analysis_routes,
+    portfolio_routes,
+    telegram_routes
+)
 
 api_router = APIRouter()
 
-api_router.include_router(trades.router, prefix="/trades", tags=["trades"])
-api_router.include_router(positions.router, prefix="/positions", tags=["positions"])
-api_router.include_router(strategy.router, prefix="/strategy", tags=["strategy"])
+# Include all routers with their prefixes and tags
+api_router.include_router(
+    trade_routes.router,
+    prefix="/trades",
+    tags=["trades"]
+)
+
+api_router.include_router(
+    analysis_routes.router,
+    prefix="/analysis",
+    tags=["analysis"]
+)
+
+api_router.include_router(
+    portfolio_routes.router,
+    prefix="/portfolio",
+    tags=["portfolio"]
+)
+
+api_router.include_router(
+    telegram_routes.router,
+    prefix="/telegram",
+    tags=["telegram"]
+)

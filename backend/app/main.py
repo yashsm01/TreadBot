@@ -5,7 +5,7 @@ import logging
 
 from .database import SessionLocal, engine, Base
 from .core.config import settings
-from .routes.v1 import trade_routes, analysis_routes, portfolio_routes
+from .api.v1.api import api_router
 from .services.telegram_service import create_telegram_service, telegram_service
 from .services.crypto_service import crypto_service
 from .services.scheduler_service import scheduler_service
@@ -138,21 +138,5 @@ async def health_check():
         "exchange": exchange_manager._initialized
     }
 
-# Include routers
-app.include_router(
-    trade_routes.router,
-    prefix=f"{settings.API_V1_STR}/trades",
-    tags=["trades"]
-)
-
-app.include_router(
-    analysis_routes.router,
-    prefix=f"{settings.API_V1_STR}/analysis",
-    tags=["analysis"]
-)
-
-app.include_router(
-    portfolio_routes.router,
-    prefix=f"{settings.API_V1_STR}/portfolio",
-    tags=["portfolio"]
-)
+# Include API router
+app.include_router(api_router, prefix=settings.API_V1_STR)
