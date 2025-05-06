@@ -1,9 +1,9 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from backend.app.services.trade_service import trade_service
-from backend.app.services.telegram_service import telegram_service
-from backend.app.schemas import trade as trade_schemas
+from app.services.trade_service import trade_service
+from app.services.telegram_service import telegram_service
+from app.schemas import trade as trade_schemas
 from datetime import datetime
 
 class TradeController:

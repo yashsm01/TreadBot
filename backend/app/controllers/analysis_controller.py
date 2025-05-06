@@ -1,9 +1,9 @@
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from backend.app.services.market_analyzer import market_analyzer
-from backend.app.services.portfolio_service import portfolio_service
-from backend.app.core.logger import logger
+from app.services.market_analyzer import market_analyzer
+from app.services.portfolio_service import portfolio_service
+from app.core.logger import logger
 
 class AnalysisController:
     @staticmethod

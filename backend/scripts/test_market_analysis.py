@@ -8,9 +8,9 @@ from datetime import datetime
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from backend.app.services.market_analyzer import market_analyzer
-from backend.app.core.logger import logger
-from backend.app.core.exchange.exchange_manager import exchange_manager
+from app.services.market_analyzer import market_analyzer
+from app.core.logger import logger
+from app.core.exchange.exchange_manager import exchange_manager
 
 def format_response(response: dict) -> str:
     """Format the response for better readability"""

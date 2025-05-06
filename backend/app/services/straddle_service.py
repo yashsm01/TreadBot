@@ -1,11 +1,11 @@
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from backend.app.core.logger import logger
-from backend.app.core.config import settings
-from backend.app.models.trade import Trade
-from backend.app.schemas.trade import TradeCreate
-from backend.app.crud.crud_trade import trade as trade_crud
+from app.core.logger import logger
+from app.core.config import settings
+from app.models.trade import Trade
+from app.schemas.trade import TradeCreate
+from app.crud.crud_trade import trade as trade_crud
 
 class StraddleService:
     def __init__(self, db: Session):

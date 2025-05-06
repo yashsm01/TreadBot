@@ -1,8 +1,8 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from backend.app.crud.base import CRUDBase
-from backend.app.models.trade import Trade
-from backend.app.schemas.trade import TradeCreate, TradeUpdate
+from app.crud.base import CRUDBase
+from app.models.trade import Trade
+from app.schemas.trade import TradeCreate, TradeUpdate
 
 class CRUDTrade(CRUDBase[Trade, TradeCreate, TradeUpdate]):
     def get_by_position(
