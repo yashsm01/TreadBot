@@ -1,0 +1,12 @@
+# to run the worker
+cd backend
+celery -A crypto_scheduler.app worker --loglevel=info
+
+#To check the beat or threds
+cd backend
+celery -A crypto_scheduler.app beat --loglevel=info
+
+#start main server
+uvicorn app.main:app --reload
+
+

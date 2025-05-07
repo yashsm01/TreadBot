@@ -7,14 +7,43 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings(BaseSettings):
-    # App Settings
     APP_NAME: str = "Crypto Straddle Trading Bot"
-    APP_VERSION: str = "1.0.0"
-    DEBUG: bool = os.getenv('DEBUG', 'false').lower() == 'true'
+    VERSION: str = "1.0.0"
+    APP_VERSION: str = VERSION
+    APP_DESCRIPTION: str = "API for automated crypto trading using time-based straddling strategy"
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "Trading Bot API"
-    PROJECT_VERSION: str = "1.0.0"
-    PROJECT_DESCRIPTION: str = "API for automated crypto trading using time-based straddling strategy"
+    DEBUG: bool = True
+
+    # Database settings
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "1234"
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: str = "5432"
+    POSTGRES_DB: str = "crypto_trading"
+
+    @property
+    def SQLALCHEMY_DATABASE_URI(self) -> str:
+        """Get database URL with async driver."""
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+
+    @property
+    def DATABASE_URL(self) -> str:
+        """Get database URL with sync driver for alembic."""
+        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+
+    # Trading settings
+    DEFAULT_TP_PCT: float = 2.0  # 2% take profit
+    DEFAULT_SL_PCT: float = 1.0  # 1% stop loss
+    DEFAULT_INTERVAL: str = "5m"
+    DEFAULT_BREAKOUT_PCT: float = 0.5
+    DEFAULT_QUANTITY: float = 0.001
+
+    # Telegram Settings
+    TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "7816751552:AAEdH_pquW9QFyr_OghH3RxkDqtOTBT3LsQ")
+    TELEGRAM_CHAT_ID: Optional[str] = os.getenv("TELEGRAM_CHAT_ID", "505504650")
+
+    # MongoDB settings (if needed)
+    MONGODB_URL: str = "mongodb://localhost:27017"
 
     # Server Settings
     HOST: str = os.getenv('HOST', '0.0.0.0')
@@ -23,19 +52,6 @@ class Settings(BaseSettings):
     # CORS Settings
     ALLOWED_ORIGINS: str = "*"
 
-    # Database Settings
-    DATABASE_URL: str = "postgresql://postgres:1234@localhost:5432/crypto_trading"
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "1234"
-    POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: int = 5432
-    POSTGRES_DB: str = "crypto_trading"
-
-    # MongoDB (if needed)
-    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-    MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "crypto_trading")
-    MONGODB_COLLECTION: str = os.getenv("MONGODB_COLLECTION", "strategy_logs")
-
     # Trading Settings
     PAPER_TRADING: bool = True
     TRADING_PAIRS: str = "BTC/USDT,ETH/USDT"
@@ -43,10 +59,6 @@ class Settings(BaseSettings):
     MIN_TRADE_AMOUNT: float = 0.001
     MAX_TRADE_AMOUNT: float = 1.0
     TRADE_FEE: float = 0.001  # 0.1%
-
-    # Telegram Settings
-    TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "7816751552:AAEdH_pquW9QFyr_OghH3RxkDqtOTBT3LsQ")
-    TELEGRAM_CHAT_ID: Optional[str] = os.getenv("TELEGRAM_CHAT_ID", "505504650")
 
     # Logging Settings
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')

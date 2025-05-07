@@ -18,7 +18,11 @@ setup(
         "apscheduler>=3.10.0",  # For scheduling tasks
         "celery>=5.3.0",  # For background tasks
         "redis>=4.5.0",  # For Redis
-        "flower>=2.0.0"  # For monitoring Celery tasks
+        "flower>=2.0.0",  # For monitoring Celery tasks
+        "alembic>=1.11.0",  # For database migrations
+        "sqlalchemy-asyncio>=2.0.23",  # For async database operations
+        "asyncpg",  # For async database operations
+        "psycopg2-binary"  # For sync database operations
     ],
     python_requires=">=3.8",
 )

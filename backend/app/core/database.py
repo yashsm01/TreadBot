@@ -1,32 +1,37 @@
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from .config import settings
+from app.core.config import settings
 from .logger import logger
 
-# Create SQLAlchemy engine
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,  # Enable connection health checks
-    echo=settings.DEBUG  # Log SQL queries in debug mode
+# Create async engine
+engine = create_async_engine(
+    settings.SQLALCHEMY_DATABASE_URI,
+    pool_pre_ping=True,
+    echo=True
 )
 
-# Create SessionLocal class
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Create async session factory
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    class_=AsyncSession
+)
 
 # Create Base class for declarative models
 Base = declarative_base()
 
-def get_db():
+async def get_db() -> AsyncSession:
     """Dependency to get database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        logger.error(f"Database session error: {str(e)}")
-        raise
-    finally:
-        db.close()
+    async with SessionLocal() as session:
+        try:
+            yield session
+        except Exception as e:
+            logger.error(f"Database session error: {str(e)}")
+            raise
+        finally:
+            await session.close()
 
 def init_db():
     """Initialize database tables"""

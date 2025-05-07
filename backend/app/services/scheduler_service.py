@@ -3,18 +3,57 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from ..core.logger import logger
-from ..services.telegram_service import telegram_service
 from ..services.market_analyzer import market_analyzer
 from ..services.portfolio_service import portfolio_service
+from ..core.config import settings
+from ..services.crypto_service import crypto_service
+from ..services.straddle_service import straddle_service
+from ..services.notifications import notification_service
+import asyncio
+import pandas as pd
+
+class StraddleMonitor:
+    def __init__(self):
+        self.monitoring_symbols: Dict[str, bool] = {}
+        self.price_history: Dict[str, List[float]] = {}
+        self.volume_history: Dict[str, List[float]] = {}
+        self.history_size = 100  # Keep last 100 data points
+        self.check_interval = 60  # Check every 60 seconds
+
+    def add_symbol(self, symbol: str):
+        """Add a symbol to monitor"""
+        self.monitoring_symbols[symbol] = True
+        self.price_history[symbol] = []
+        self.volume_history[symbol] = []
+        logger.info(f"Added {symbol} to straddle monitoring")
+
+    def remove_symbol(self, symbol: str):
+        """Remove a symbol from monitoring"""
+        if symbol in self.monitoring_symbols:
+            del self.monitoring_symbols[symbol]
+            del self.price_history[symbol]
+            del self.volume_history[symbol]
+            logger.info(f"Removed {symbol} from straddle monitoring")
+
+    def update_price_data(self, symbol: str, price: float, volume: float):
+        """Update price and volume history for a symbol"""
+        self.price_history[symbol].append(price)
+        self.volume_history[symbol].append(volume)
+
+        # Keep only last N data points
+        if len(self.price_history[symbol]) > self.history_size:
+            self.price_history[symbol] = self.price_history[symbol][-self.history_size:]
+            self.volume_history[symbol] = self.volume_history[symbol][-self.history_size:]
 
 class SchedulerService:
     def __init__(self, db: Session):
         """Initialize the scheduler service"""
         self.db = db
         self.scheduler = AsyncIOScheduler()
+        self.straddle_monitor = StraddleMonitor()
         self._setup_jobs()
 
     def _setup_jobs(self):
@@ -69,12 +108,8 @@ class SchedulerService:
 
                 # Check for significant market conditions
                 if analysis.get('volatility', 0) > 0.02:  # 2% volatility threshold
-                    await telegram_service.send_notification(
-                        self.db,
-                        user_id=1,  # TODO: Get from settings
-                        message_type="MARKET_ALERT",
-                        content=f"High volatility detected for {symbol}: {analysis['volatility']*100:.2f}%",
-                        symbol=symbol
+                    await notification_service.send_message(
+                        f"⚠️ High volatility detected for {symbol}: {analysis['volatility']*100:.2f}%"
                     )
 
             logger.info("Market analysis completed")
@@ -89,12 +124,8 @@ class SchedulerService:
 
             # Check for significant changes
             if abs(summary.get('total_unrealized_pnl', 0)) > 1000:  # $1000 threshold
-                await telegram_service.send_notification(
-                    self.db,
-                    user_id=1,  # TODO: Get from settings
-                    message_type="PORTFOLIO_ALERT",
-                    content=f"Significant P/L change: ${summary['total_unrealized_pnl']:,.2f}",
-                    symbol=None
+                await notification_service.send_message(
+                    f"💰 Significant P/L change: ${summary['total_unrealized_pnl']:,.2f}"
                 )
 
             logger.info("Portfolio update completed")
@@ -116,15 +147,11 @@ class SchedulerService:
             }
 
             # Send summary notification
-            await telegram_service.send_notification(
-                self.db,
-                user_id=1,  # TODO: Get from settings
-                message_type="DAILY_SUMMARY",
-                content=f"Daily Trading Summary:\n" +
-                       f"Total Trades: {summary['total_trades']}\n" +
-                       f"Win Rate: {summary['win_rate']:.2f}%\n" +
-                       f"Net P/L: ${summary['net_profit']:,.2f}",
-                symbol=None
+            await notification_service.send_message(
+                f"📊 Daily Trading Summary:\n"
+                f"Total Trades: {summary['total_trades']}\n"
+                f"Win Rate: {summary['win_rate']:.2f}%\n"
+                f"Net P/L: ${summary['net_profit']:,.2f}"
             )
 
             logger.info("Daily summary sent")
@@ -147,14 +174,10 @@ class SchedulerService:
                 )
 
                 if not risk_check['position_size_ok'] or not risk_check['volatility_ok']:
-                    await telegram_service.send_notification(
-                        self.db,
-                        user_id=1,  # TODO: Get from settings
-                        message_type="RISK_ALERT",
-                        content=f"Risk limit exceeded for {position['symbol']}\n" +
-                               f"Position Size OK: {risk_check['position_size_ok']}\n" +
-                               f"Volatility OK: {risk_check['volatility_ok']}",
-                        symbol=position['symbol']
+                    await notification_service.send_message(
+                        f"⚠️ Risk limit exceeded for {position['symbol']}\n"
+                        f"Position Size OK: {'✅' if risk_check['position_size_ok'] else '❌'}\n"
+                        f"Volatility OK: {'✅' if risk_check['volatility_ok'] else '❌'}"
                     )
 
             logger.info("Risk check completed")
@@ -180,5 +203,113 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"Error stopping scheduler: {str(e)}")
             raise
+
+    async def start_monitoring(self):
+        """Start the monitoring service"""
+        self.running = True
+        logger.info("Starting straddle monitoring service")
+
+        while self.running:
+            try:
+                await self.check_opportunities()
+                await asyncio.sleep(self.straddle_monitor.check_interval)
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {str(e)}")
+                await asyncio.sleep(5)  # Short delay before retry
+
+    async def stop_monitoring(self):
+        """Stop the monitoring service"""
+        self.running = False
+        logger.info("Stopping straddle monitoring service")
+
+    async def check_opportunities(self):
+        """Check for straddle opportunities across monitored symbols"""
+        for symbol in list(self.straddle_monitor.monitoring_symbols.keys()):
+            try:
+                # Get latest market data
+                market_data = await crypto_service.get_market_data(symbol)
+                if not market_data:
+                    continue
+
+                current_price = market_data["price"]
+                current_volume = market_data["volume"]
+
+                # Update historical data
+                self.straddle_monitor.update_price_data(
+                    symbol, current_price, current_volume
+                )
+
+                # Check if we have enough historical data
+                if len(self.straddle_monitor.price_history[symbol]) < 20:  # Need minimum data for indicators
+                    continue
+
+                # Convert to pandas series for analysis
+                prices = pd.Series(self.straddle_monitor.price_history[symbol])
+                volumes = pd.Series(self.straddle_monitor.volume_history[symbol])
+
+                # Analyze market conditions
+                breakout_signal = await straddle_service.analyze_market_conditions(
+                    symbol, prices, volumes
+                )
+
+                if breakout_signal:
+                    # Check if signal confidence meets minimum threshold
+                    if breakout_signal.confidence >= straddle_service.strategy.min_confidence:
+                        # Handle breakout
+                        activated_trade = await straddle_service.handle_breakout(
+                            symbol, breakout_signal
+                        )
+
+                        if activated_trade:
+                            logger.info(
+                                f"Activated {activated_trade.side} trade for {symbol} "
+                                f"at {activated_trade.entry_price}"
+                            )
+
+                # Check for potential new straddle setups
+                if self._should_create_new_straddle(symbol, prices, volumes):
+                    position_size = straddle_service.strategy.position_size
+                    await straddle_service.create_straddle_trades(
+                        symbol, current_price, position_size
+                    )
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol}: {str(e)}")
+
+    def _should_create_new_straddle(self,
+                                   symbol: str,
+                                   prices: pd.Series,
+                                   volumes: pd.Series) -> bool:
+        """
+        Determine if we should create a new straddle setup based on market conditions
+        """
+        try:
+            # Check if we already have pending trades
+            pending_trades = trade_crud.get_multi_by_symbol_and_status(
+                None, symbol=symbol, status="PENDING"
+            )
+            if pending_trades:
+                return False
+
+            # Calculate volatility (using standard deviation)
+            volatility = prices.pct_change().std()
+            avg_volatility = prices.pct_change().rolling(window=20).std().mean()
+
+            # Check for low volatility condition (squeeze)
+            is_low_volatility = volatility < avg_volatility * 0.7
+
+            # Check for sideways price action
+            price_range = (prices.max() - prices.min()) / prices.mean()
+            is_sideways = price_range < 0.02  # 2% range
+
+            # Check for decreasing volume
+            volume_trend = volumes.pct_change().mean()
+            is_volume_decreasing = volume_trend < 0
+
+            return is_low_volatility and is_sideways and is_volume_decreasing
+
+        except Exception as e:
+            logger.error(f"Error in should_create_new_straddle: {str(e)}")
+            return False
 
 scheduler_service = SchedulerService(None)  # Will be initialized with proper db session

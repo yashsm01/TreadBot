@@ -29,9 +29,9 @@ def main():
     print("🚀 Starting Crypto Trading Scheduler")
     print("-" * 50)
 
-    # Start Celery worker
+    # Start Celery worker with solo pool for Windows compatibility
     worker = run_command(
-        "celery -A crypto_scheduler.app:app worker --loglevel=info",
+        "python -m celery -A crypto_scheduler.app:app worker --pool=solo --loglevel=info",
         "Celery Worker"
     )
 
@@ -40,13 +40,13 @@ def main():
 
     # Start Celery beat
     beat = run_command(
-        "celery -A crypto_scheduler.app:app beat --loglevel=info",
+        "python -m celery -A crypto_scheduler.app:app beat --loglevel=info",
         "Celery Beat"
     )
 
     # Start Flower monitoring
     flower = run_command(
-        "celery -A crypto_scheduler.app:app flower --port=5555",
+        "python -m celery -A crypto_scheduler.app:app flower --port=5555",
         "Flower Monitor"
     )
 
