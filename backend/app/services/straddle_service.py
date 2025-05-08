@@ -170,17 +170,27 @@ class StraddleService:
                     trade_to_cancel = trade
 
             if trade_to_activate:
+                # Prepare update data for activated trade
+                activate_update = {
+                    "status": "OPEN",
+                    "entered_at": datetime.utcnow()
+                }
+
                 # Activate the trade in breakout direction
-                trade_to_activate.status = "OPEN"
-                trade_to_activate.entered_at = datetime.utcnow()
                 activated_trade = await trade_crud.update(
-                    self.db, db_obj=trade_to_activate
+                    self.db,
+                    db_obj=trade_to_activate,
+                    obj_in=activate_update
                 )
 
-                # Cancel the opposite trade
+                # Cancel the opposite trade if it exists
                 if trade_to_cancel:
-                    trade_to_cancel.status = "CANCELLED"
-                    await trade_crud.update(self.db, db_obj=trade_to_cancel)
+                    cancel_update = {"status": "CANCELLED"}
+                    await trade_crud.update(
+                        self.db,
+                        db_obj=trade_to_cancel,
+                        obj_in=cancel_update
+                    )
 
                 # Send notification
                 await notification_service.send_breakout_notification(
@@ -210,9 +220,17 @@ class StraddleService:
             closed_trades = []
 
             for trade in open_trades:
-                trade.status = "CLOSED"
-                trade.closed_at = datetime.utcnow()
-                closed_trade = await trade_crud.update(self.db, db_obj=trade)
+                # Prepare update data for closing trade
+                close_update = {
+                    "status": "CLOSED",
+                    "closed_at": datetime.utcnow()
+                }
+
+                closed_trade = await trade_crud.update(
+                    self.db,
+                    db_obj=trade,
+                    obj_in=close_update
+                )
                 closed_trades.append(closed_trade)
 
                 # Send notification

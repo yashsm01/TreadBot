@@ -27,10 +27,12 @@ class MarketAnalysisRequest(BaseModel):
         return v
 
 class BreakoutRequest(BaseModel):
+    symbol: str = Field(..., description="Trading pair symbol")
     direction: str = Field(..., description="Breakout direction (UP/DOWN)")
     price: float = Field(gt=0, description="Breakout price")
     confidence: float = Field(ge=0, le=1, description="Signal confidence level")
     volume_spike: bool = Field(default=False, description="Volume spike indicator")
+    bb_squeeze: bool = Field(default=False, description="Bollinger Bands squeeze indicator")
     rsi_divergence: bool = Field(default=False, description="RSI divergence indicator")
     macd_crossover: bool = Field(default=False, description="MACD crossover indicator")
 
@@ -137,9 +139,8 @@ async def analyze_market(
             detail=f"Failed to analyze market conditions: {str(e)}"
         )
 
-@router.post("/breakout/{symbol}", response_model=TradeResponse)
+@router.post("/breakout", response_model=TradeResponse)
 async def handle_breakout_event(
-    symbol: str,
     breakout: BreakoutRequest,
     db: AsyncSession = Depends(get_db)
 ):
@@ -157,16 +158,18 @@ async def handle_breakout_event(
     try:
         straddle_service = StraddleService(db)
         breakout_signal = BreakoutSignal(
+            symbol=breakout.symbol,
             direction=breakout.direction,
             price=breakout.price,
             confidence=breakout.confidence,
             volume_spike=breakout.volume_spike,
+            bb_squeeze = breakout.bb_squeeze,
             rsi_divergence=breakout.rsi_divergence,
             macd_crossover=breakout.macd_crossover
         )
 
         result = await straddle_service.handle_breakout(
-            symbol=symbol,
+            symbol=breakout.symbol,
             breakout_signal=breakout_signal
         )
 
