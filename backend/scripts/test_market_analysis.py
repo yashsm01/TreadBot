@@ -8,7 +8,7 @@ from datetime import datetime
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.market_analyzer import market_analyzer
+from app.services.market_analyzer import MarketAnalyzer
 from app.core.logger import logger
 from app.core.exchange.exchange_manager import exchange_manager
 
@@ -44,7 +44,9 @@ async def test_market_analysis():
 
         for symbol in symbols:
             print(f"\nTesting market analysis for {symbol}...")
-            analysis = await market_analyzer.get_market_analysis(symbol)
+            # Create a new instance for testing
+            analyzer = MarketAnalyzer()
+            analysis = await analyzer.get_market_analysis(symbol)
             print(format_response(analysis))
 
     except Exception as e:

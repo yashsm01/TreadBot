@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from app.services.market_analyzer import market_analyzer
+from app.services.market_analyzer import MarketAnalyzer
 from app.services.portfolio_service import portfolio_service
 from app.core.logger import logger
 
@@ -10,11 +10,13 @@ class AnalysisController:
     async def get_market_analysis(symbol: str) -> Dict:
         """Get comprehensive market analysis"""
         try:
+            analyzer = MarketAnalyzer()
+
             # Get market conditions
-            market_conditions = await market_analyzer.check_market_conditions(symbol)
+            market_conditions = await analyzer.check_market_conditions(symbol)
 
             # Get trading signals
-            trading_signal = await market_analyzer.get_trading_signal(symbol)
+            trading_signal = await analyzer.get_trading_signal(symbol)
 
             return {
                 "market_conditions": market_conditions,

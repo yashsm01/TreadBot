@@ -6,12 +6,17 @@ from ..crud.crud_portfolio import portfolio as portfolio_crud
 from ..crud.crud_portfolio import transaction as transaction_crud
 from ..core.exchange.exchange_manager import exchange_manager
 from ..core.logger import logger
-from ..services.market_analyzer import market_analyzer
+from ..services.market_analyzer import MarketAnalyzer
+from ..core.config import settings
+from ..models.trade import Trade
+from ..crud.crud_trade import trade as trade_crud
+from ..services.notifications import notification_service
 
 class PortfolioService:
     def __init__(self, db: Session):
         self.db = db
         self.exchange_manager = exchange_manager
+        self.market_analyzer = MarketAnalyzer()
 
     async def get_portfolio_summary(self, user_id: int) -> Dict:
         """Get overall portfolio summary"""

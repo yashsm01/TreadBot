@@ -16,6 +16,7 @@ class StraddleSetupRequest(BaseModel):
     quantity: float = Field(gt=0, description="Trade quantity")
 
 class MarketAnalysisRequest(BaseModel):
+    symbol: str = Field(..., description="Trading pair symbol")
     prices: List[float] = Field(..., min_items=10, description="Historical price data")
     volumes: List[float] = Field(..., min_items=10, description="Historical volume data")
 
@@ -71,9 +72,8 @@ async def create_straddle_setup(
             detail=f"Failed to create straddle setup: {str(e)}"
         )
 
-@router.post("/analyze/{symbol}", response_model=Dict[str, Any])
+@router.post("/analyze", response_model=Dict[str, Any])
 async def analyze_market(
-    symbol: str,
     analysis: MarketAnalysisRequest,
     db: AsyncSession = Depends(get_db)
 ):
@@ -86,10 +86,11 @@ async def analyze_market(
         db: Database session
 
     Returns:
-        Market analysis result including breakout signals
+        Market analysis result including breakout signals and market conditions
     """
     try:
         straddle_service = StraddleService(db)
+        symbol = analysis.symbol
         prices_series = pd.Series(analysis.prices)
         volumes_series = pd.Series(analysis.volumes)
 
@@ -99,19 +100,35 @@ async def analyze_market(
             volume=volumes_series
         )
 
-        if result:
+        if not result["success"]:
+            if result.get("validation_error"):
+                raise HTTPException(status_code=400, detail=result["message"])
+            raise HTTPException(status_code=500, detail=result["message"])
+
+        if result["has_signal"]:
+            signal = result["signal"]
             return {
-                "symbol": symbol,
-                "direction": result.direction,
-                "price": result.price,
-                "confidence": result.confidence,
+                "has_signal": True,
+                "direction": signal.direction,
+                "price": signal.price,
+                "confidence": signal.confidence,
                 "indicators": {
-                    "volume_spike": result.volume_spike,
-                    "rsi_divergence": result.rsi_divergence,
-                    "macd_crossover": result.macd_crossover
-                }
+                    "volume_spike": signal.volume_spike,
+                    "rsi_divergence": signal.rsi_divergence,
+                    "macd_crossover": signal.macd_crossover,
+                    "bb_squeeze": signal.bb_squeeze
+                },
+                "market_conditions": result["market_conditions"],
+                "message": result["message"]
             }
-        return {"message": "No significant breakout signals detected"}
+
+        return {
+            "has_signal": False,
+            "market_conditions": result["market_conditions"],
+            "message": result["message"],
+            "reason": result.get("reason", "No breakout conditions met")
+        }
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

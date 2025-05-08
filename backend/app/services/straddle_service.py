@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.models.trade import Trade
 from app.schemas.trade import TradeCreate
 from app.crud.crud_trade import trade as trade_crud
-from app.services.helper.market_analyzer import market_analyzer, BreakoutSignal
+from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
 from app.services.notifications import notification_service
 
 class StraddleStrategy:
@@ -54,9 +54,40 @@ class StraddleService:
     async def analyze_market_conditions(self,
                                       symbol: str,
                                       prices: pd.Series,
-                                      volume: pd.Series) -> Optional[BreakoutSignal]:
-        """Analyze market conditions for potential straddle setup"""
-        return await market_analyzer.analyze_breakout(symbol, prices, volume)
+                                      volume: pd.Series) -> Dict:
+        """
+        Analyze market conditions for potential straddle setup
+        Returns detailed analysis including market conditions and any breakout signals
+        """
+        analysis = await MarketAnalyzer.analyze_breakout(symbol, prices, volume)
+
+        if analysis.get("validation_error"):
+            logger.warning(f"Validation error in market analysis: {analysis['message']}")
+            return {
+                "success": False,
+                "message": analysis["message"],
+                "validation_error": True
+            }
+
+        if analysis.get("error"):
+            logger.error(f"Error in market analysis: {analysis['message']}")
+            return {
+                "success": False,
+                "message": analysis["message"],
+                "error": True
+            }
+
+        response = {
+            "success": True,
+            "has_signal": analysis["has_signal"],
+            "message": analysis["message"],
+            "market_conditions": analysis["market_conditions"]
+        }
+
+        if analysis["has_signal"] and "signal" in analysis:
+            response["signal"] = analysis["signal"]
+
+        return response
 
     async def create_straddle_trades(self,
                                    symbol: str,

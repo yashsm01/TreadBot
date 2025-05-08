@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from ..core.logger import logger
-from ..services.market_analyzer import market_analyzer
+from ..services.market_analyzer import MarketAnalyzer
 from ..services.portfolio_service import portfolio_service
 from ..core.config import settings
 from ..services.crypto_service import crypto_service
@@ -99,12 +99,15 @@ class SchedulerService:
     async def _analyze_market(self):
         """Perform market analysis and send notifications if needed"""
         try:
+            # Create analyzer instance
+            analyzer = MarketAnalyzer()
+
             # Get active trading pairs
-            active_pairs = await market_analyzer.get_active_pairs()
+            active_pairs = await analyzer.get_trading_pairs()
 
             for symbol in active_pairs:
                 # Get market analysis
-                analysis = await market_analyzer.get_market_analysis(symbol)
+                analysis = await analyzer.get_market_analysis(symbol)
 
                 # Check for significant market conditions
                 if analysis.get('volatility', 0) > 0.02:  # 2% volatility threshold
