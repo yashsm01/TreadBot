@@ -42,6 +42,9 @@ class BreakoutRequest(BaseModel):
             raise ValueError('direction must be either "UP" or "DOWN"')
         return v
 
+class CloserRequest(BaseModel):
+    symbol: str = Field(..., description="Trading pair symbol")
+
 @router.post("/setup/create", response_model=List[TradeResponse])
 async def create_straddle_setup(
     setup: StraddleSetupRequest,
@@ -187,9 +190,9 @@ async def handle_breakout_event(
             detail=f"Failed to handle breakout: {str(e)}"
         )
 
-@router.post("/close/{symbol}", response_model=List[TradeResponse])
+@router.post("/close", response_model=List[TradeResponse])
 async def close_straddle_positions(
-    symbol: str,
+    closer: CloserRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -204,7 +207,7 @@ async def close_straddle_positions(
     """
     try:
         straddle_service = StraddleService(db)
-        closed_trades = await straddle_service.close_straddle_trades(symbol)
+        closed_trades = await straddle_service.close_straddle_trades(closer.symbol)
 
         if closed_trades:
             return closed_trades

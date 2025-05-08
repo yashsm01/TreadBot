@@ -3,6 +3,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy import update
 from app.core.database import Base
 
 ModelType = TypeVar("ModelType", bound=Base)
@@ -41,18 +42,46 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         db_obj: ModelType,
         obj_in: Union[UpdateSchemaType, Dict[str, Any]]
     ) -> ModelType:
-        obj_data = jsonable_encoder(db_obj)
-        if isinstance(obj_in, dict):
-            update_data = obj_in
-        else:
-            update_data = obj_in.dict(exclude_unset=True)
-        for field in obj_data:
-            if field in update_data:
-                setattr(db_obj, field, update_data[field])
-        db.add(db_obj)
-        await db.commit()
-        await db.refresh(db_obj)
-        return db_obj
+        try:
+            # Try to encode the object
+            try:
+                obj_data = jsonable_encoder(db_obj)
+            except Exception as encode_error:
+                raise ValueError(f"Failed to encode object: {str(encode_error)}")
+
+            # Process update data
+            try:
+                if isinstance(obj_in, dict):
+                    update_data = obj_in
+                else:
+                    update_data = obj_in.dict(exclude_unset=True)
+            except Exception as dict_error:
+                raise ValueError(f"Failed to process update data: {str(dict_error)}")
+
+            # Update fields
+            try:
+                for field in obj_data:
+                    if field in update_data:
+                        setattr(db_obj, field, update_data[field])
+            except Exception as field_error:
+                raise ValueError(f"Failed to update field: {str(field_error)}")
+
+            # Database operations
+            try:
+                db.add(db_obj)
+                await db.commit()
+                await db.refresh(db_obj)
+            except Exception as db_error:
+                await db.rollback()
+                raise ValueError(f"Database operation failed: {str(db_error)}")
+
+            return db_obj
+
+        except Exception as e:
+            # Log the error with more context
+            error_msg = f"Update failed for {self.model.__name__}: {str(e)}"
+            print(f"Error in update: {error_msg}")  # For immediate debugging
+            raise ValueError(error_msg)
 
     async def remove(self, db: AsyncSession, *, id: int) -> ModelType:
         result = await db.execute(select(self.model).filter(self.model.id == id))

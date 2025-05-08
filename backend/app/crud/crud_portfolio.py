@@ -4,6 +4,7 @@ from sqlalchemy import func
 from datetime import datetime, timedelta
 from ..models.portfolio import Portfolio, Transaction
 from .base import CRUDBase
+from app.services.helper.heplers import helpers
 
 class CRUDPortfolio(CRUDBase[Portfolio, Dict, Dict]):
     def get_by_user_and_symbol(
@@ -47,7 +48,7 @@ class CRUDPortfolio(CRUDBase[Portfolio, Dict, Dict]):
         else:  # SELL
             portfolio.quantity -= quantity
 
-        portfolio.last_updated = datetime.utcnow()
+        portfolio.last_updated = helpers.get_current_ist_for_db()
         db.commit()
         db.refresh(portfolio)
         return portfolio

@@ -9,8 +9,7 @@ from app.schemas.trade import TradeCreate
 from app.crud.crud_trade import trade as trade_crud
 from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
 from app.services.notifications import notification_service
-from sqlalchemy import select
-
+from app.services.helper.heplers import helpers
 class StraddleStrategy:
     def __init__(self):
         self.breakout_threshold = 0.01  # 1% breakout threshold
@@ -175,28 +174,42 @@ class StraddleService:
                 logger.info(f"No matching trade found for {breakout_signal.direction} breakout")
                 return None
 
-            # Update the activated trade
-            activated_trade = await trade_crud.update(
-                self.db,
-                db_obj=trade_to_activate,
-                obj_in={
-                    "status": "OPEN",
-                    "entered_at": datetime.utcnow()
-                }
-            )
+            try:
+                trade_to_activate.status = "OPEN"
+                trade_to_activate.entered_at = helpers.get_current_ist_for_db()
+                self.db.add(trade_to_activate)
+                # Update the activated trade
+                # activated_trade = await trade_crud.update(
+                #     self.db,
+                #     db_obj=trade_to_activate,
+                #     obj_in={
+                #         "status": "OPEN",
+                #         "entered_at": datetime.utcnow()
+                #     }
+                # )
+                logger.info(f"Successfully activated trade {trade_to_activate.id}")
 
-            # Update the cancelled trade if it exists
-            if trade_to_cancel:
-                await trade_crud.update(
-                    self.db,
-                    db_obj=trade_to_cancel,
-                    obj_in={"status": "CANCELLED"}
-                )
+                # Update the cancelled trade if it exists
+                if trade_to_cancel:
+                    trade_to_cancel.status = "CANCELLED"
+                    trade_to_cancel.closed_at = helpers.get_current_ist_for_db()
+                    self.db.add(trade_to_cancel)
+                    # cancelled_trade = await trade_crud.update(
+                    #     self.db,
+                    #     db_obj=trade_to_cancel,
+                    #     obj_in={
+                    #         "status": "CANCELLED",
+                    #         "closed_at": datetime.utcnow()
+                    #     }
+                    # )
+                    logger.info(f"Successfully cancelled trade {trade_to_cancel.id}")
 
-            # Ensure all relationships are loaded
-            await self.db.refresh(activated_trade)
+            except Exception as update_error:
+                logger.error(f"Error updating trades: {str(update_error)}")
+                await self.db.rollback()
+                raise
 
-            # Send notification after updates
+            # Send notification after successful updates
             try:
                 await notification_service.send_breakout_notification(
                     symbol=symbol,
@@ -211,9 +224,9 @@ class StraddleService:
                 )
             except Exception as notify_error:
                 logger.error(f"Failed to send notification: {str(notify_error)}")
-
-            # Return the fully loaded trade object
-            return activated_trade
+            await self.db.commit()
+            await self.db.refresh(trade_to_activate)
+            return trade_to_activate
 
         except Exception as e:
             logger.error(f"Error handling breakout: {str(e)}")
@@ -222,40 +235,88 @@ class StraddleService:
     async def close_straddle_trades(self, symbol: str) -> List[Trade]:
         """Close all open straddle trades for a given symbol"""
         try:
-            # Get open trades
             open_trades = await trade_crud.get_multi_by_symbol_and_status(
                 self.db, symbol=symbol, status="OPEN"
             )
-            closed_trades = []
 
-            for trade in open_trades:
-                # Update trade status
-                trade.status = "CLOSED"
-                trade.closed_at = datetime.utcnow()
+            if not open_trades:
+                logger.info(f"No open trades found for symbol {symbol}")
+                return []
 
-                # Get updated trade data
-                result = await self.db.execute(
-                    select(Trade).filter(Trade.id == trade.id)
-                )
-                closed_trade = result.scalar_one()
-                await self.db.refresh(closed_trade)
-                closed_trades.append(closed_trade)
+            trade_ids_to_process: List[int] = []
+            for trade_to_close in open_trades:
+                try:
+                    # Mark for closure, actual update happens before commit
+                    trade_to_close.status = "CLOSED"
+                    trade_to_close.closed_at = helpers.get_current_ist_for_db()
+                    # self.db.add(trade_to_close) # Not strictly necessary if fetched from this session
+                    trade_ids_to_process.append(trade_to_close.id)
+                    logger.info(f"Marked trade {trade_to_close.id} for closure.")
+                except Exception as trade_error:
+                    logger.error(f"Error marking trade {trade_to_close.id} for closure: {str(trade_error)}. Skipping.")
+                    continue
 
-            # Send notifications after updates
-            for trade in closed_trades:
-                await notification_service.send_position_close_notification(
-                    symbol=symbol,
-                    side=trade.side,
-                    entry_price=trade.entry_price,
-                    exit_price=trade.exit_price,
-                    pnl=trade.pnl
-                )
+            if not trade_ids_to_process:
+                logger.info("No trades were successfully marked for closure.")
+                return []
 
-            logger.info(f"Closed {len(closed_trades)} straddle trades for {symbol}")
-            return closed_trades
+            try:
+                # Commit all marked changes
+                await self.db.commit()
+                logger.info(f"Successfully committed closure for trade IDs: {trade_ids_to_process}")
+            except Exception as commit_error:
+                logger.error(f"Commit failed after marking trades for closure: {str(commit_error)}")
+                try:
+                    await self.db.rollback()
+                    logger.info("Rollback successful after commit failure.")
+                except Exception as rollback_error:
+                    logger.error(f"Rollback failed after commit failure: {str(rollback_error)}")
+                raise # Re-raise the commit error
+
+            # Re-fetch trades to ensure they are in a valid state for further operations (notifications/response)
+            final_closed_trades: List[Trade] = []
+            for trade_id in trade_ids_to_process:
+                try:
+                    # Assuming trade_crud.get fetches the object and it's attached to self.db
+                    # If trade_crud.get needs to load relationships for notifications/response,
+                    # ensure it supports options like selectinload.
+                    trade = await trade_crud.get(self.db, id=trade_id)
+                    if trade and trade.status == "CLOSED": # Verify it was indeed closed
+                        final_closed_trades.append(trade)
+                    elif trade:
+                        logger.warning(f"Trade {trade_id} found but not in 'CLOSED' status after commit. Status: {trade.status}")
+                    else:
+                        logger.warning(f"Trade {trade_id} not found after commit.")
+                except Exception as fetch_error:
+                    logger.error(f"Error fetching trade {trade_id} post-commit: {str(fetch_error)}")
+                    continue
+
+            # Send notifications for successfully processed and fetched trades
+            for trade_for_notification in final_closed_trades:
+                try:
+                    await notification_service.send_position_close_notification(
+                        symbol=trade_for_notification.symbol,
+                        side=trade_for_notification.side,
+                        entry_price=trade_for_notification.entry_price,
+                        exit_price=trade_for_notification.exit_price,
+                        pnl=trade_for_notification.pnl
+                    )
+                except Exception as notify_error:
+                    logger.error(f"Failed to send notification for trade {trade_for_notification.id}: {str(notify_error)}")
+                    continue
+
+            logger.info(f"Successfully processed and notified {len(final_closed_trades)} straddle trades for {symbol}.")
+            return final_closed_trades
 
         except Exception as e:
-            logger.error(f"Error closing straddle trades: {str(e)}")
+            logger.error(f"Critical error in close_straddle_trades for {symbol}: {str(e)}.")
+            # Ensure rollback if an overarching error occurs and session is active
+            if self.db.is_active:
+                try:
+                    await self.db.rollback()
+                    logger.info(f"Session rolled back due to critical error in close_straddle_trades: {str(e)}")
+                except Exception as final_rollback_error:
+                    logger.error(f"Failed to rollback session during critical error handling: {str(final_rollback_error)}")
             raise
 
 straddle_service = StraddleService(None)  # Will be initialized with DB session later

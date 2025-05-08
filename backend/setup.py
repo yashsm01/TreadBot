@@ -22,7 +22,8 @@ setup(
         "alembic>=1.11.0",  # For database migrations
         "sqlalchemy-asyncio>=2.0.23",  # For async database operations
         "asyncpg",  # For async database operations
-        "psycopg2-binary"  # For sync database operations
+        "psycopg2-binary",  # For sync database operations
+        "pytz"  # For timezone operations
     ],
     python_requires=">=3.8",
 )
