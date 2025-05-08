@@ -9,6 +9,7 @@ from app.schemas.trade import TradeCreate
 from app.crud.crud_trade import trade as trade_crud
 from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
 from app.services.notifications import notification_service
+from sqlalchemy import select
 
 class StraddleStrategy:
     def __init__(self):
@@ -156,9 +157,10 @@ class StraddleService:
             )
 
             if not pending_trades:
+                logger.info(f"No pending trades found for symbol {symbol}")
                 return None
 
-            # Determine which trade to activate based on breakout direction
+            # Find matching trades for the breakout direction
             trade_to_activate = None
             trade_to_cancel = None
 
@@ -169,30 +171,33 @@ class StraddleService:
                 else:
                     trade_to_cancel = trade
 
-            if trade_to_activate:
-                # Prepare update data for activated trade
-                activate_update = {
+            if not trade_to_activate:
+                logger.info(f"No matching trade found for {breakout_signal.direction} breakout")
+                return None
+
+            # Update the activated trade
+            activated_trade = await trade_crud.update(
+                self.db,
+                db_obj=trade_to_activate,
+                obj_in={
                     "status": "OPEN",
                     "entered_at": datetime.utcnow()
                 }
+            )
 
-                # Activate the trade in breakout direction
-                activated_trade = await trade_crud.update(
+            # Update the cancelled trade if it exists
+            if trade_to_cancel:
+                await trade_crud.update(
                     self.db,
-                    db_obj=trade_to_activate,
-                    obj_in=activate_update
+                    db_obj=trade_to_cancel,
+                    obj_in={"status": "CANCELLED"}
                 )
 
-                # Cancel the opposite trade if it exists
-                if trade_to_cancel:
-                    cancel_update = {"status": "CANCELLED"}
-                    await trade_crud.update(
-                        self.db,
-                        db_obj=trade_to_cancel,
-                        obj_in=cancel_update
-                    )
+            # Ensure all relationships are loaded
+            await self.db.refresh(activated_trade)
 
-                # Send notification
+            # Send notification after updates
+            try:
                 await notification_service.send_breakout_notification(
                     symbol=symbol,
                     direction=breakout_signal.direction,
@@ -204,8 +209,11 @@ class StraddleService:
                         'macd_crossover': breakout_signal.macd_crossover
                     }
                 )
+            except Exception as notify_error:
+                logger.error(f"Failed to send notification: {str(notify_error)}")
 
-                return activated_trade
+            # Return the fully loaded trade object
+            return activated_trade
 
         except Exception as e:
             logger.error(f"Error handling breakout: {str(e)}")
@@ -214,26 +222,27 @@ class StraddleService:
     async def close_straddle_trades(self, symbol: str) -> List[Trade]:
         """Close all open straddle trades for a given symbol"""
         try:
+            # Get open trades
             open_trades = await trade_crud.get_multi_by_symbol_and_status(
                 self.db, symbol=symbol, status="OPEN"
             )
             closed_trades = []
 
             for trade in open_trades:
-                # Prepare update data for closing trade
-                close_update = {
-                    "status": "CLOSED",
-                    "closed_at": datetime.utcnow()
-                }
+                # Update trade status
+                trade.status = "CLOSED"
+                trade.closed_at = datetime.utcnow()
 
-                closed_trade = await trade_crud.update(
-                    self.db,
-                    db_obj=trade,
-                    obj_in=close_update
+                # Get updated trade data
+                result = await self.db.execute(
+                    select(Trade).filter(Trade.id == trade.id)
                 )
+                closed_trade = result.scalar_one()
+                await self.db.refresh(closed_trade)
                 closed_trades.append(closed_trade)
 
-                # Send notification
+            # Send notifications after updates
+            for trade in closed_trades:
                 await notification_service.send_position_close_notification(
                     symbol=symbol,
                     side=trade.side,
