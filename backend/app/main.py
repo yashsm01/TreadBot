@@ -19,6 +19,9 @@ from .models.position import Position
 from .models.crypto import Cryptocurrency, CryptoPair
 from .models.telegram import TelegramUser, TelegramNotification
 
+telegram_srv = True
+scheduler_srv = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -82,18 +85,20 @@ async def startup_event():
         scheduler_service.db = db
         portfolio_service.db = db
 
-        # Create and initialize telegram service
-        logger.info("Creating telegram service...")
-        global telegram_service
-        telegram_service = create_telegram_service(db)
+        if(telegram_srv):
+            # Create and initialize telegram service
+            logger.info("Creating telegram service...")
+            global telegram_service
+            telegram_service = create_telegram_service(db)
 
-        # Initialize Telegram bot
-        logger.info("Initializing Telegram bot...")
-        await telegram_service.initialize()
+            # Initialize Telegram bot
+            logger.info("Initializing Telegram bot...")
+            await telegram_service.initialize()
 
-        # Start scheduler
-        logger.info("Starting scheduler...")
-        await scheduler_service.start()
+        if(scheduler_srv):
+            # Start scheduler
+            logger.info("Starting scheduler...")
+            await scheduler_service.start()
 
         logger.info("Application startup completed successfully")
     except Exception as e:
