@@ -2,8 +2,8 @@ import logging
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from ..crud.crud_portfolio import portfolio as portfolio_crud
-from ..crud.crud_portfolio import transaction as transaction_crud
+from ..crud.crud_portfolio import portfolio_crud as portfolio_crud
+from ..crud.crud_portfolio import transaction_crud as transaction_crud
 from ..core.exchange.exchange_manager import exchange_manager
 from ..core.logger import logger
 from ..services.market_analyzer import MarketAnalyzer

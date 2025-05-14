@@ -9,7 +9,6 @@ from app.core.config import settings
 # Import your models here
 from app.models.portfolio import Portfolio, Transaction
 from app.models.trade import Trade
-from app.models.position import Position
 from app.models.crypto import Cryptocurrency, CryptoPair
 from app.models.telegram import TelegramUser, TelegramNotification
 from app.core.database import Base

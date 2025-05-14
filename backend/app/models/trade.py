@@ -3,6 +3,8 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 
 from ..core.database import Base
+# Import Position here if you need to use it directly,
+# otherwise SQLAlchemy can handle the string reference
 
 class Trade(Base):
     __tablename__ = "trades"

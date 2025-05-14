@@ -35,7 +35,7 @@ def upgrade():
         sa.Column('open_time', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('close_time', sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint('id'),
-        sa.CheckConstraint("status IN ('ACTIVE', 'CLOSED')", name='positions_status_check')
+        sa.CheckConstraint("status IN ('OPEN', 'CLOSED','IN_PROGRESS')", name='positions_status_check')
     )
 
     # Create indexes for positions

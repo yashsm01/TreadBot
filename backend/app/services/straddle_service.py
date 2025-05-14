@@ -10,10 +10,15 @@ from app.crud.crud_trade import trade as trade_crud
 from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
 from app.services.notifications import notification_service
 from app.services.helper.heplers import helpers
+from app.services.helper.binance_helper import binance_helper
+from app.crud.curd_position import position_crud
+from app.schemas.position import PositionCreate, PositionUpdate, Position
+from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
+
 class StraddleStrategy:
     def __init__(self):
-        self.breakout_threshold = 0.01  # 1% breakout threshold
-        self.min_confidence = 0.7  # Minimum confidence for breakout signals
+        self.breakout_threshold = settings.DEFAULT_TP_PCT / 100  # 1% breakout threshold
+        self.min_confidence = settings.DEFAULT_SL_PCT / 100  # Minimum confidence for breakout signals
         self.position_size = 1.0  # Default position size in base currency
 
     def calculate_entry_levels(self, current_price: float) -> Tuple[float, float]:
@@ -128,7 +133,6 @@ class StraddleService:
             # Refresh both trades to ensure consistent state
             await self.db.refresh(long_trade_db)
             await self.db.refresh(short_trade_db)
-
             # Send notification
             await notification_service.send_straddle_setup_notification(
                 symbol=symbol,
@@ -318,5 +322,122 @@ class StraddleService:
                 except Exception as final_rollback_error:
                     logger.error(f"Failed to rollback session during critical error handling: {str(final_rollback_error)}")
             raise
+
+    async def get_straddle_positions(self, symbol: str) -> List[Trade]:
+        """Get all straddle positions for a given symbol"""
+        return await trade_crud.get_multi_by_symbol_and_status(
+            self.db, symbol=symbol, status="OPEN"
+        )
+
+    async def auto_buy_sell_straddle_start(self, symbol: str) -> List[Trade]:
+        """Auto buy or sell straddle based on market conditions"""
+        try:
+            #get current price
+            current_price = await binance_helper.get_price(symbol);
+
+            #get quentity from portfolio
+            protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
+            quantity = protfolo_details.quantity
+
+            buy_entry, sell_entry = self.strategy.calculate_entry_levels(current_price["price"])
+
+            #check if there is a straddle position already
+            open_positions = await position_crud.get_by_symbol_and_status(
+                self.db, symbol=symbol, status="OPEN"
+            )
+            if open_positions:
+                logger.info(f"Straddle position already exists for {symbol}, skipping auto buy/sell")
+                return []
+
+            #create a position
+            position = PositionCreate(
+                symbol=symbol,
+                strategy="TIME_BASED_STRADDLE",  # This is optional if it's the default
+                status="OPEN",
+                total_quantity=quantity,
+                average_entry_price=buy_entry,
+                realized_pnl=0,
+                unrealized_pnl=0
+            )
+            position_db = await position_crud.create(self.db, obj_in=position)
+
+            # #get last 100 prices and volumes with 5m interval with market analyzer
+            # last_100_prices, last_100_volumes = await MarketAnalyzer.analyze_breakout(symbol, current_price, 100)
+
+
+            # #analyze market conditions
+            # analysis = await self.analyze_market_conditions(symbol, last_100_prices, last_100_volumes)
+
+            await self.db.refresh(position_db)
+            return []
+
+        except Exception as e:
+            logger.error(f"Error in auto_buy_sell_straddle: {str(e)}")
+            raise
+
+    async def auto_buy_sell_straddle_close(self, symbol: str) -> List[Trade]:
+        """Auto close straddle position for a given symbol"""
+        position = await position_crud.get_by_symbol_and_status(
+            self.db, symbol=symbol, status="OPEN"
+        )
+        if position:
+            await self.close_straddle_trades(symbol)
+        else:
+            logger.info(f"No open straddle position found for {symbol}")
+            return []
+        return position
+
+    async def auto_buy_sell_straddle_inprogress(self, symbol: str) -> List[Trade]:
+        """Auto buy or sell straddle based on market conditions"""
+        try:
+            #get current price
+            current_price = await binance_helper.get_price(symbol)
+
+            #get quentity from portfolio
+            protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
+            quantity = protfolo_details.quantity
+
+            #check if there is a straddle position already
+            open_positions = await position_crud.get_position_by_symbol(
+                self.db, symbol=symbol
+            )
+            if open_positions.status == "OPEN":
+                await self.create_straddle_trades(symbol, current_price["price"], quantity)
+
+                await self.db.refresh(open_positions)
+                logger.info(f"No open straddle position exists for {symbol}, proceeding with auto buy/sell")
+                #update the position status to in progress
+                open_positions.status = "IN_PROGRESS"
+                updated_position = await position_crud.update(
+                    self.db,
+                    db_obj=open_positions,
+                    obj_in={
+                        "status": "IN_PROGRESS"
+                    }
+                )
+                await self.db.refresh(updated_position)
+                logger.info(f"Updated position status to IN_PROGRESS for {symbol}")
+                return updated_position
+
+            #get treas from symbol
+            treas = await trade_crud.get_by_symbol(
+                self.db, symbol=symbol
+            )
+            if not treas:
+                logger.info(f"No open treas found for {symbol}, proceeding with auto buy/sell")
+                return []
+            #get current price
+            current_price = await binance_helper.get_price(symbol)
+
+
+
+
+
+            logger.info(f"Straddle position already exists for {symbol}, skipping auto buy/sell")
+            return open_positions
+        except Exception as e:
+            logger.error(f"Error in auto_buy_sell_straddle_working: {str(e)}")
+            raise
+
 
 straddle_service = StraddleService(None)  # Will be initialized with DB session later

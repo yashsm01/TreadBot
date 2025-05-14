@@ -4,8 +4,8 @@ from app.api.v1.endpoints import (
     analysis_routes,
     portfolio_routes,
     telegram_routes,
-    straddle,
-    crypto_routes
+    crypto_routes,
+    straddle_routes
 )
 
 api_router = APIRouter()
@@ -37,7 +37,7 @@ api_router.include_router(
 
 # Include straddle endpoints
 api_router.include_router(
-    straddle.router,
+    straddle_routes.router,
     prefix="/straddle",
     tags=["straddle"]
 )

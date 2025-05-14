@@ -222,3 +222,62 @@ async def close_straddle_positions(
             status_code=500,
             detail=f"Failed to close straddle positions: {str(e)}"
         )
+
+@router.post("/auto-buy-sell-straddle-start", response_model=List[TradeResponse])
+async def auto_buy_sell_straddle_start(
+    params: CloserRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Auto buy or sell straddle based on market conditions
+    """
+    try:
+        straddle_service = StraddleService(db)
+        trades = await straddle_service.auto_buy_sell_straddle_start(params.symbol)
+        return trades
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to close straddle positions: {str(e)}"
+        )
+
+@router.post("/auto-buy-sell-straddle-close", response_model=List[TradeResponse])
+async def auto_buy_sell_straddle_close(
+    params: CloserRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Auto close straddle position for a given symbol"""
+    try:
+        straddle_service = StraddleService(db)
+        trades = await straddle_service.auto_close_straddle_position(params.symbol)
+        return trades
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to close straddle positions: {str(e)}"
+        )
+
+@router.post("/auto-buy-sell-straddle-inprogress", response_model=List[TradeResponse])
+async def auto_buy_sell_straddle_inprogress(
+    params: CloserRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Auto buy or sell straddle based on market conditions"""
+    try:
+        straddle_service = StraddleService(db)
+        trades = await straddle_service.auto_buy_sell_straddle_inprogress(params.symbol)
+        return trades
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to close straddle positions: {str(e)}"
+        )
+

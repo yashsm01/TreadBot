@@ -1,23 +1,25 @@
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 from datetime import datetime, timedelta
 from ..models.portfolio import Portfolio, Transaction
 from .base import CRUDBase
 from app.services.helper.heplers import helpers
 
 class CRUDPortfolio(CRUDBase[Portfolio, Dict, Dict]):
-    def get_by_user_and_symbol(
+    async def get_by_user_and_symbol(
         self,
-        db: Session,
-        user_id: int,
-        symbol: str
-    ) -> Optional[Portfolio]:
+        db: AsyncSession,
+        user_id: int = 1,
+        symbol: str = None
+    ) -> Portfolio:
         """Get portfolio entry by user_id and symbol"""
-        return db.query(Portfolio).filter(
+        result = await db.execute(select(Portfolio).filter(
             Portfolio.user_id == user_id,
             Portfolio.symbol == symbol
-        ).first()
+        ))
+        return result.scalars().first()
 
     def get_user_portfolio(
         self,
@@ -146,5 +148,5 @@ class CRUDTransaction(CRUDBase[Transaction, Dict, Dict]):
         return query.order_by(Transaction.timestamp.desc()).all()
 
 # Create instances
-portfolio = CRUDPortfolio(Portfolio)
-transaction = CRUDTransaction(Transaction)
+portfolio_crud = CRUDPortfolio(Portfolio)
+transaction_crud = CRUDTransaction(Transaction)

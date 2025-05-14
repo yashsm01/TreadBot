@@ -15,7 +15,6 @@ from .core.exchange.exchange_manager import exchange_manager
 # Import all models to ensure they are registered with Base
 from .models.portfolio import Portfolio, Transaction
 from .models.trade import Trade
-from .models.position import Position
 from .models.crypto import Cryptocurrency, CryptoPair
 from .models.telegram import TelegramUser, TelegramNotification
 

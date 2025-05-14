@@ -1,7 +1,7 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.crud.crud_trade import trade as trade_crud
-from app.crud.crud_position import position as position_crud
+from app.crud.curd_position import position_crud as position_crud
 from app.schemas import trade as trade_schemas
 from app.schemas import position as position_schemas
 from app.core.logger import logger
@@ -16,7 +16,7 @@ class TradeService:
             trade = trade_crud.create(db=db, obj_in=trade_data)
 
             # Create or update position
-            position = position_crud.get_active_positions(db=db, symbol=trade.symbol)
+            position = position_crud.get_by_status(db=db, status="OPEN")
             if not position:
                 position_data = position_schemas.PositionCreate(
                     symbol=trade.symbol,

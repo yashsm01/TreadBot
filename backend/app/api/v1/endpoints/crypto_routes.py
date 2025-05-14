@@ -221,7 +221,7 @@ async def insert_live_data(
         for symbol in symbols:
             result = await insert_crypto_data_live(db, symbol);
             print(result)
-        return(result)
+        return(f"Data inserted for {len(symbols)} symbols")
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

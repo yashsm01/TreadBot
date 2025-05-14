@@ -5,41 +5,35 @@ from datetime import datetime
 from ..core.database import Base
 
 class Position(Base):
+    """SQLAlchemy ORM model for Position"""
     __tablename__ = "positions"
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, index=True)
-    strategy = Column(String, index=True)  # e.g., "TIME_BASED_STRADDLE"
+    strategy = Column(String, default="TIME_BASED_STRADDLE")
+    status = Column(String, default="OPEN")
     total_quantity = Column(Float, default=0)
     average_entry_price = Column(Float, nullable=True)
     realized_pnl = Column(Float, default=0)
     unrealized_pnl = Column(Float, default=0)
-    status = Column(String)  # "ACTIVE" or "CLOSED"
     open_time = Column(DateTime, default=datetime.utcnow)
     close_time = Column(DateTime, nullable=True)
 
+    # Define the relationship with trades - back reference
     trades = relationship("Trade", back_populates="position")
 
     def update_position_metrics(self):
         """Update position metrics based on associated trades"""
-        total_value = 0
-        self.total_quantity = 0
-        self.realized_pnl = 0
+        if not self.trades:
+            return
 
-        for trade in self.trades:
-            if trade.status == "OPEN":
-                if trade.side == "BUY":
-                    self.total_quantity += trade.quantity
-                else:
-                    self.total_quantity -= trade.quantity
-                total_value += trade.entry_price * trade.quantity
-            elif trade.status == "CLOSED":
-                self.realized_pnl += trade.pnl
+        # Calculate totals from trades
+        self.realized_pnl = sum(trade.realized_pnl or 0 for trade in self.trades
+                              if trade.status == "CLOSED")
+        self.unrealized_pnl = sum(trade.unrealized_pnl or 0 for trade in self.trades
+                                if trade.status == "OPEN")
 
-        if self.total_quantity != 0:
-            self.average_entry_price = total_value / abs(self.total_quantity)
-            self.status = "ACTIVE"
-        else:
-            self.average_entry_price = None
+        # If all trades are closed, mark position as closed
+        if all(trade.status in ["CLOSED", "CANCELLED"] for trade in self.trades):
             self.status = "CLOSED"
             self.close_time = datetime.utcnow()

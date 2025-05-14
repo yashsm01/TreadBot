@@ -6,6 +6,14 @@ from app.models.trade import Trade
 from app.schemas.trade import TradeCreate, TradeUpdate
 
 class CRUDTrade(CRUDBase[Trade, TradeCreate, TradeUpdate]):
+    async def get_by_symbol(
+        self, db: AsyncSession, *, symbol: str
+    ) -> List[Trade]:
+        result = await db.execute(
+            select(self.model).filter(Trade.symbol == symbol)
+        )
+        return result.scalars().all()
+
     async def get_by_position(
         self, db: AsyncSession, *, position_id: int, skip: int = 0, limit: int = 100
     ) -> List[Trade]:
