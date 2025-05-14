@@ -7,13 +7,16 @@ from app.core.config import settings
 from app.models.trade import Trade
 from app.schemas.trade import TradeCreate
 from app.crud.crud_trade import trade as trade_crud
-from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
-from app.services.notifications import notification_service
-from app.services.helper.heplers import helpers
-from app.services.helper.binance_helper import binance_helper
 from app.crud.curd_position import position_crud
 from app.schemas.position import PositionCreate, PositionUpdate, Position
 from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
+#services
+from app.services.helper.heplers import helpers
+from app.services.helper.binance_helper import binance_helper
+from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
+from app.services.notifications import notification_service
+from app.services.swap_service import swap_service
+
 
 class StraddleStrategy:
     def __init__(self):
@@ -442,11 +445,14 @@ class StraddleService:
                 #close the treas_sell
                 await self.create_straddle_trades(symbol,current_price, quantity)
 
+
             if current_price < treas_sell[0].entry_price:
                 # close old treas
                 await self.close_straddle_trades(symbol)
                 #close the treas_sell
                 await self.create_straddle_trades(symbol,current_price, quantity)
+                #swap the symbol to stable coin
+                await swap_service.swap_symbol_stable_coin(symbol, quantity, current_price)
 
             logger.info(f"Straddle position already exists for {symbol}, skipping auto buy/sell")
             return open_positions
