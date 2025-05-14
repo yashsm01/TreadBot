@@ -35,11 +35,11 @@ class CRUDTrade(CRUDBase[Trade, TradeCreate, TradeUpdate]):
         return result.scalars().all()
 
     async def get_multi_by_symbol_and_status(
-        self, db: AsyncSession, *, symbol: str, status: str
+        self, db: AsyncSession, *, symbol: str, status: List[str]
     ) -> List[Trade]:
         result = await db.execute(
             select(self.model)
-            .filter(Trade.symbol == symbol, Trade.status == status)
+            .filter(Trade.symbol == symbol, Trade.status.in_(status))
         )
         return result.scalars().all()
 

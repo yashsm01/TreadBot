@@ -156,7 +156,7 @@ class StraddleService:
         try:
             # Get pending straddle trades
             pending_trades = await trade_crud.get_multi_by_symbol_and_status(
-                self.db, symbol=symbol, status="PENDING"
+                self.db, symbol=symbol, status=["PENDING"]
             )
 
             if not pending_trades:
@@ -240,11 +240,11 @@ class StraddleService:
         """Close all open straddle trades for a given symbol"""
         try:
             open_trades = await trade_crud.get_multi_by_symbol_and_status(
-                self.db, symbol=symbol, status="OPEN"
+                self.db, symbol=symbol, status=["OPEN", "PENDING"]
             )
 
             if not open_trades:
-                logger.info(f"No open trades found for symbol {symbol}")
+                logger.info(f"No open or pending trades found for symbol {symbol}")
                 return []
 
             trade_ids_to_process: List[int] = []
@@ -326,7 +326,7 @@ class StraddleService:
     async def get_straddle_positions(self, symbol: str) -> List[Trade]:
         """Get all straddle positions for a given symbol"""
         return await trade_crud.get_multi_by_symbol_and_status(
-            self.db, symbol=symbol, status="OPEN"
+            self.db, symbol=symbol, status=["OPEN"]
         )
 
     async def auto_buy_sell_straddle_start(self, symbol: str) -> List[Trade]:
@@ -390,20 +390,23 @@ class StraddleService:
     async def auto_buy_sell_straddle_inprogress(self, symbol: str) -> List[Trade]:
         """Auto buy or sell straddle based on market conditions"""
         try:
-            #get current price
-            current_price = await binance_helper.get_price(symbol)
-
-            #get quentity from portfolio
-            protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
-            quantity = protfolo_details.quantity
-
             #check if there is a straddle position already
             open_positions = await position_crud.get_position_by_symbol(
                 self.db, symbol=symbol
             )
-            if open_positions.status == "OPEN":
-                await self.create_straddle_trades(symbol, current_price["price"], quantity)
+            if open_positions.status == "CLOSED":
+                logger.info(f"Straddle position already closed for {symbol}, skipping auto buy/sell")
+                return []
+            #get current price
+            crypto_details = await binance_helper.get_price(symbol)
+            current_price = crypto_details["price"]
+            #get quentity from portfolio
+            protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
+            quantity = protfolo_details.quantity
 
+
+            if open_positions.status == "OPEN":
+                await self.create_straddle_trades(symbol,current_price, quantity)
                 await self.db.refresh(open_positions)
                 logger.info(f"No open straddle position exists for {symbol}, proceeding with auto buy/sell")
                 #update the position status to in progress
@@ -417,21 +420,33 @@ class StraddleService:
                 )
                 await self.db.refresh(updated_position)
                 logger.info(f"Updated position status to IN_PROGRESS for {symbol}")
-                return updated_position
+                # return updated_position
 
             #get treas from symbol
-            treas = await trade_crud.get_by_symbol(
-                self.db, symbol=symbol
+            treas = await trade_crud.get_multi_by_symbol_and_status(
+                self.db, symbol=symbol, status=["PENDING"]
             )
             if not treas:
+                await self.create_straddle_trades(symbol,current_price, quantity)
                 logger.info(f"No open treas found for {symbol}, proceeding with auto buy/sell")
                 return []
-            #get current price
-            current_price = await binance_helper.get_price(symbol)
 
 
+            #filter the treas by side buy and status open
+            treas_buy = [treas for treas in treas if treas.side == "BUY" and treas.status == "PENDING"]
+            treas_sell = [treas for treas in treas if treas.side == "SELL" and treas.status == "PENDING"]
 
+            if current_price > treas_buy[0].entry_price:
+                # close old treas
+                await self.close_straddle_trades(symbol)
+                #close the treas_sell
+                await self.create_straddle_trades(symbol,current_price, quantity)
 
+            if current_price < treas_sell[0].entry_price:
+                # close old treas
+                await self.close_straddle_trades(symbol)
+                #close the treas_sell
+                await self.create_straddle_trades(symbol,current_price, quantity)
 
             logger.info(f"Straddle position already exists for {symbol}, skipping auto buy/sell")
             return open_positions
