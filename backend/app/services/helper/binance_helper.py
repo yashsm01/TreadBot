@@ -2,9 +2,10 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from typing import Dict, Optional, List, Union
 import logging
-from ...core.logger import logger
+from app.core.logger import logger
 from datetime import datetime
 import numpy as np
+from app.core.config import settings
 
 class BinanceHelper:
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None):
@@ -230,6 +231,77 @@ class BinanceHelper:
             logger.error(f"Error processing 5m price history for {symbol}: {str(e)}")
             raise BinanceAPIException(f"Error processing price history: {str(e)}")
 
+    #get the best stable coin to buy from the binance array from live market
+    async def get_best_stable_coin(self) -> Dict[str, Union[str, Dict]]:
+        """
+        Get the best stablecoin by analyzing market data and return detailed information
+
+        Returns:
+            Dictionary containing the best stablecoin symbol and detailed information for all analyzed stablecoins
+        """
+        try:
+            # Common stablecoins on Binance
+            stablecoins = settings.STABLE_COINS
+
+            # Get 24hr stats for BTC paired with each stablecoin
+            stats = {}
+            for stable in stablecoins:
+                try:
+                    pair = f"BTC{stable}"
+                    # Get statistics for this pair
+                    ticker = await self.get_24h_stats(pair)
+
+                    # Calculate metrics (volume and liquidity are good indicators)
+                    volume = ticker["volume"]
+
+                    stats[stable] = {
+                        "symbol": stable,
+                        "pair": pair,
+                        "volume": volume,
+                        "price_change_percent": ticker["price_change_percent"],
+                        "high": ticker["high"],
+                        "low": ticker["low"],
+                        "price_change": ticker["price_change"],
+                        "timestamp": ticker["timestamp"]
+                    }
+
+                    logger.info(f"Analyzed stablecoin {stable}: volume=${volume:,.2f}")
+                except Exception as e:
+                    # This pair might not exist, skip it
+                    logger.warning(f"Pair BTC{stable} not available: {str(e)}")
+                    continue
+
+            if not stats:
+                # Default to USDT if no data available
+                logger.warning("No stablecoin data available, defaulting to USDT")
+                return {
+                    "best_stable": "USDT",
+                    "reason": "No stablecoin data available",
+                    "all_stables": {}
+                }
+
+            # Rank stablecoins by volume (higher is better)
+            best_stable = max(stats.items(), key=lambda x: x[1]["volume"])[0]
+
+            logger.info(f"Selected {best_stable} as the best stablecoin based on volume")
+
+            return {
+                "best_stable": best_stable,
+                "reason": "Highest trading volume",
+                "best_metrics": stats[best_stable],
+                "all_stables": stats,
+                "timestamp": int(datetime.utcnow().timestamp() * 1000)
+            }
+
+        except Exception as e:
+            logger.error(f"Error determining best stablecoin: {str(e)}")
+            # Default to USDT in case of errors
+            return {
+                "best_stable": "USDT",
+                "reason": f"Error: {str(e)}",
+                "all_stables": {},
+                "timestamp": int(datetime.utcnow().timestamp() * 1000)
+            }
 
     # Helper function to format timestamp
     def _format_timestamp(self, timestamp_ms: int) -> str:

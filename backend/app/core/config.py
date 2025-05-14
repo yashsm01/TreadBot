@@ -31,6 +31,9 @@ class Settings(BaseSettings):
         """Get database URL with sync driver for alembic."""
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
+    # Stable coins
+    STABLE_COINS: List[str] = ["USDT", "USDC", "BUSD", "DAI", "TUSD"]
+
     # Trading settings
     DEFAULT_TP_PCT: float = 2.0  # 2% take profit
     DEFAULT_SL_PCT: float = 1.0  # 1% stop loss
