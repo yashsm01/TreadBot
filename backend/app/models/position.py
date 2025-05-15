@@ -18,6 +18,8 @@ class Position(Base):
     unrealized_pnl = Column(Float, default=0)
     open_time = Column(DateTime, default=datetime.utcnow)
     close_time = Column(DateTime, nullable=True)
+    # created_at = Column(DateTime, default=datetime.utcnow)
+    # updated_at = Column(DateTime, default=datetime.utcnow)
 
     # Define the relationship with trades - back reference
     trades = relationship("Trade", back_populates="position")

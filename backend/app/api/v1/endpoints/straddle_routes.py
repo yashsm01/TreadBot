@@ -262,6 +262,20 @@ async def auto_buy_sell_straddle_close(
             detail=f"Failed to close straddle positions: {str(e)}"
         )
 
+@router.post("/change-straddle-status", response_model=bool)
+async def change_straddle_status(
+    status: bool,
+    db: AsyncSession = Depends(get_db)
+):
+    """Change the straddle status"""
+    try:
+        straddle_service = StraddleService(db)
+        status = await straddle_service.change_straddle_status()
+        return status
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/auto-buy-sell-straddle-inprogress", response_model=List[TradeResponse])
 async def auto_buy_sell_straddle_inprogress(
     params: CloserRequest,

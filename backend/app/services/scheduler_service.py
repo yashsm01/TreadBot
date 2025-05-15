@@ -4,14 +4,16 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
-from sqlalchemy.orm import Session
-from ..core.logger import logger
-from ..services.market_analyzer import MarketAnalyzer
-from ..services.portfolio_service import portfolio_service
-from ..core.config import settings
-from ..services.crypto_service import crypto_service
-from ..services.straddle_service import straddle_service
-from ..services.notifications import notification_service
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
+from app.core.database import get_db
+from app.core.logger import logger
+from app.services.market_analyzer import MarketAnalyzer
+from app.services.portfolio_service import portfolio_service
+from app.core.config import settings
+from app.services.crypto_service import crypto_service
+from app.services.straddle_service import StraddleService
+from app.services.notifications import notification_service
 import asyncio
 import pandas as pd
 
@@ -49,11 +51,27 @@ class StraddleMonitor:
             self.volume_history[symbol] = self.volume_history[symbol][-self.history_size:]
 
 class SchedulerService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession = Depends(get_db)):
         """Initialize the scheduler service"""
         self.db = db
         self.scheduler = AsyncIOScheduler()
         self.straddle_monitor = StraddleMonitor()
+
+        # Schedule jobs
+        self.minute_schedule_enabled = True
+        self.hoverly_schedule_enabled = False
+        self.daily_schedule_enabled = False
+        self.minute_schedule_stop = self._minute_schedule_start
+        self.hoverly_schedule_stop = self._hoverly_schedule_start
+
+        # Control flags for scheduled jobs
+        self.auto_trading_enabled = True
+        self.market_analysis_enabled = False
+        self.portfolio_update_enabled = False
+        self.daily_summary_enabled = False
+        self.risk_check_enabled = False
+        self.monitoring_enabled = False
+
         self._setup_jobs()
 
     def _setup_jobs(self):
@@ -61,33 +79,25 @@ class SchedulerService:
         try:
             # Market analysis every hour
             self.scheduler.add_job(
-                self._analyze_market,
+                self._hoverly_schedule_start,
                 CronTrigger(minute=0),  # Every hour at minute 0
-                id='market_analysis',
+                id='hoverly_schedule',
                 replace_existing=True
             )
 
             # Portfolio update every 15 minutes
             self.scheduler.add_job(
-                self._update_portfolio,
-                IntervalTrigger(minutes=15),
-                id='portfolio_update',
+                self._minute_schedule_start,
+                IntervalTrigger(minutes=1),
+                id='minute_schedule',
                 replace_existing=True
             )
 
             # Daily summary at midnight
             self.scheduler.add_job(
-                self._send_daily_summary,
+                self._daily_schedule_start,
                 CronTrigger(hour=0, minute=0),  # Every day at midnight
-                id='daily_summary',
-                replace_existing=True
-            )
-
-            # Risk check every 5 minutes
-            self.scheduler.add_job(
-                self._check_risk_limits,
-                IntervalTrigger(minutes=5),
-                id='risk_check',
+                id='daily_schedule',
                 replace_existing=True
             )
 
@@ -96,8 +106,93 @@ class SchedulerService:
             logger.error(f"Error setting up scheduled jobs: {str(e)}")
             raise
 
+    # Time based schedules start
+    async def _daily_schedule_start(self):
+        """Start the daily schedule"""
+        try:
+            #check if daily schedule is enabled
+            if not self.daily_schedule_enabled:
+                logger.debug("Daily schedule disabled, skipping")
+                return
+
+            await self._send_daily_summary()
+        except Exception as e:
+            logger.error(f"Error in daily schedule: {str(e)}")
+            raise
+
+    async def _hoverly_schedule_start(self):
+        """Schedule the jobs"""
+        try:
+            #check if hoverly schedule is enabled
+            if not self.hoverly_schedule_enabled:
+                logger.debug("Hoverly schedule disabled, skipping")
+                return
+
+            await self._analyze_market()
+            await self._update_portfolio()
+            await self._send_daily_summary()
+            await self._check_risk_limits()
+        except Exception as e:
+            logger.error(f"Error in hoverly schedule: {str(e)}")
+            raise
+
+    async def _minute_schedule_start(self):
+        """Start the minute schedule"""
+        try:
+            #check if minute schedule is enabled
+            if not self.minute_schedule_enabled:
+                logger.debug("Minute schedule disabled, skipping")
+                return
+            straddle_service = StraddleService(self.db)
+            await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
+        except Exception as e:
+            logger.error(f"Error in minute schedule: {str(e)}")
+            raise
+    # Time based schedules end
+    async def _minute_schedule_stop(self):
+        """Stop the minute schedule"""
+        try:
+            await self._stop_monitoring()
+        except Exception as e:
+            logger.error(f"Error in minute schedule stop: {str(e)}")
+            raise
+    async def _daily_schedule_stop(self):
+        """Stop the daily schedule"""
+        try:
+            await self._stop_monitoring()
+        except Exception as e:
+            logger.error(f"Error in daily schedule stop: {str(e)}")
+            raise
+    async def _hoverly_schedule_stop(self):
+        """Stop the hoverly schedule"""
+        try:
+            await self._stop_monitoring()
+        except Exception as e:
+            logger.error(f"Error in hoverly schedule stop: {str(e)}")
+            raise
+
+    #sub functions start
+
+    #auto trading functions process
+    async def auto_trading_process(self):
+        """Perform auto trading process"""
+        try:
+            #check if auto trading is enabled
+            if not self.auto_trading_enabled:
+                logger.debug("Auto trading disabled, skipping")
+                return
+
+            await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
+        except Exception as e:
+            logger.error(f"Error in auto trading process: {str(e)}")
+            raise
+
     async def _analyze_market(self):
         """Perform market analysis and send notifications if needed"""
+        if not self.market_analysis_enabled:
+            logger.debug("Market analysis disabled, skipping")
+            return
+
         try:
             # Create analyzer instance
             analyzer = MarketAnalyzer()
@@ -121,6 +216,10 @@ class SchedulerService:
 
     async def _update_portfolio(self):
         """Update portfolio metrics"""
+        if not self.portfolio_update_enabled:
+            logger.debug("Portfolio update disabled, skipping")
+            return
+
         try:
             # Get portfolio summary
             summary = await portfolio_service.get_portfolio_summary(self.db)
@@ -137,6 +236,10 @@ class SchedulerService:
 
     async def _send_daily_summary(self):
         """Send daily trading summary"""
+        if not self.daily_summary_enabled:
+            logger.debug("Daily summary disabled, skipping")
+            return
+
         try:
             # Get performance metrics
             performance = await portfolio_service.get_trading_performance(self.db, days=1)
@@ -163,6 +266,10 @@ class SchedulerService:
 
     async def _check_risk_limits(self):
         """Check portfolio risk limits"""
+        if not self.risk_check_enabled:
+            logger.debug("Risk check disabled, skipping")
+            return
+
         try:
             # Get active positions
             positions = await portfolio_service.get_position_metrics(self.db)
@@ -187,6 +294,27 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"Error in risk check job: {str(e)}")
 
+    # Methods to control scheduled jobs
+    def enable_market_analysis(self, enabled: bool = True):
+        """Enable or disable market analysis job"""
+        self.market_analysis_enabled = enabled
+        logger.info(f"Market analysis {'enabled' if enabled else 'disabled'}")
+
+    def enable_portfolio_update(self, enabled: bool = True):
+        """Enable or disable portfolio update job"""
+        self.portfolio_update_enabled = enabled
+        logger.info(f"Portfolio update {'enabled' if enabled else 'disabled'}")
+
+    def enable_daily_summary(self, enabled: bool = True):
+        """Enable or disable daily summary job"""
+        self.daily_summary_enabled = enabled
+        logger.info(f"Daily summary {'enabled' if enabled else 'disabled'}")
+
+    def enable_risk_check(self, enabled: bool = True):
+        """Enable or disable risk check job"""
+        self.risk_check_enabled = enabled
+        logger.info(f"Risk check {'enabled' if enabled else 'disabled'}")
+
     async def start(self):
         """Start the scheduler"""
         try:
@@ -209,12 +337,12 @@ class SchedulerService:
 
     async def start_monitoring(self):
         """Start the monitoring service"""
+        self.monitoring_enabled = True
         self.running = True
         logger.info("Starting straddle monitoring service")
 
-        while self.running:
+        while self.running and self.monitoring_enabled:
             try:
-                await self.check_opportunities()
                 await asyncio.sleep(self.straddle_monitor.check_interval)
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {str(e)}")
@@ -222,97 +350,10 @@ class SchedulerService:
 
     async def stop_monitoring(self):
         """Stop the monitoring service"""
+        self.monitoring_enabled = False
         self.running = False
         logger.info("Stopping straddle monitoring service")
 
-    async def check_opportunities(self):
-        """Check for straddle opportunities across monitored symbols"""
-        for symbol in list(self.straddle_monitor.monitoring_symbols.keys()):
-            try:
-                # Get latest market data
-                market_data = await crypto_service.get_market_data(symbol)
-                if not market_data:
-                    continue
 
-                current_price = market_data["price"]
-                current_volume = market_data["volume"]
-
-                # Update historical data
-                self.straddle_monitor.update_price_data(
-                    symbol, current_price, current_volume
-                )
-
-                # Check if we have enough historical data
-                if len(self.straddle_monitor.price_history[symbol]) < 20:  # Need minimum data for indicators
-                    continue
-
-                # Convert to pandas series for analysis
-                prices = pd.Series(self.straddle_monitor.price_history[symbol])
-                volumes = pd.Series(self.straddle_monitor.volume_history[symbol])
-
-                # Analyze market conditions
-                breakout_signal = await straddle_service.analyze_market_conditions(
-                    symbol, prices, volumes
-                )
-
-                if breakout_signal:
-                    # Check if signal confidence meets minimum threshold
-                    if breakout_signal.confidence >= straddle_service.strategy.min_confidence:
-                        # Handle breakout
-                        activated_trade = await straddle_service.handle_breakout(
-                            symbol, breakout_signal
-                        )
-
-                        if activated_trade:
-                            logger.info(
-                                f"Activated {activated_trade.side} trade for {symbol} "
-                                f"at {activated_trade.entry_price}"
-                            )
-
-                # Check for potential new straddle setups
-                if self._should_create_new_straddle(symbol, prices, volumes):
-                    position_size = straddle_service.strategy.position_size
-                    await straddle_service.create_straddle_trades(
-                        symbol, current_price, position_size
-                    )
-
-            except Exception as e:
-                logger.error(f"Error processing {symbol}: {str(e)}")
-
-    def _should_create_new_straddle(self,
-                                   symbol: str,
-                                   prices: pd.Series,
-                                   volumes: pd.Series) -> bool:
-        """
-        Determine if we should create a new straddle setup based on market conditions
-        """
-        try:
-            # Check if we already have pending trades
-            pending_trades = trade_crud.get_multi_by_symbol_and_status(
-                None, symbol=symbol, status="PENDING"
-            )
-            if pending_trades:
-                return False
-
-            # Calculate volatility (using standard deviation)
-            volatility = prices.pct_change().std()
-            avg_volatility = prices.pct_change().rolling(window=20).std().mean()
-
-            # Check for low volatility condition (squeeze)
-            is_low_volatility = volatility < avg_volatility * 0.7
-
-            # Check for sideways price action
-            price_range = (prices.max() - prices.min()) / prices.mean()
-            is_sideways = price_range < 0.02  # 2% range
-
-            # Check for decreasing volume
-            volume_trend = volumes.pct_change().mean()
-            is_volume_decreasing = volume_trend < 0
-
-            return is_low_volatility and is_sideways and is_volume_decreasing
-
-        except Exception as e:
-            logger.error(f"Error in should_create_new_straddle: {str(e)}")
-            return False
 
 scheduler_service = SchedulerService(None)  # Will be initialized with proper db session

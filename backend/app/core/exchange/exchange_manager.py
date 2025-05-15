@@ -250,12 +250,55 @@ class ExchangeManager:
             await self.initialize()
 
         try:
-            if not await self.validate_trading_pair(symbol):
-                logger.warning(f"Invalid or inactive trading pair: {symbol}")
+            # Format symbol if needed (e.g., convert BTCUSDT to BTC/USDT)
+            formatted_symbol = symbol
+            if '/' not in symbol:
+                # Handle different symbol formats
+                if symbol.endswith('USDT'):
+                    # Something like BTCUSDT
+                    formatted_symbol = f"{symbol[:-4]}/USDT"
+                elif 'USDT' in symbol:
+                    # Something like BTC-USDT or BTC_USDT
+                    formatted_symbol = symbol.replace('-', '/').replace('_', '/')
+                else:
+                    # Try to infer format
+                    for quote in ['USDT', 'BTC', 'ETH', 'BNB']:
+                        if quote in symbol:
+                            base = symbol.replace(quote, '')
+                            formatted_symbol = f"{base}/{quote}"
+                            break
+
+            logger.info(f"Getting OHLCV for symbol: {symbol}, formatted as: {formatted_symbol}, timeframe: {timeframe}, limit: {limit}")
+
+            if not await self.validate_trading_pair(formatted_symbol):
+                logger.warning(f"Invalid or inactive trading pair: {formatted_symbol}")
                 return None
 
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            return ohlcv
+            # Try to fetch OHLCV data using different methods
+            try:
+                # Method 1: Direct fetch_ohlcv call
+                ohlcv = await self.exchange.fetch_ohlcv(formatted_symbol, timeframe, limit=limit)
+                if ohlcv and len(ohlcv) > 0:
+                    return ohlcv
+            except Exception as e1:
+                logger.warning(f"Primary OHLCV fetch failed for {formatted_symbol}: {str(e1)}. Trying alternatives...")
+
+                try:
+                    # Method 2: Fetch tickers at intervals and construct OHLCV
+                    current_ticker = await self.get_ticker(formatted_symbol)
+                    if current_ticker and not current_ticker.get('error', True):
+                        # Create a simple one-candle OHLCV as fallback
+                        current_price = current_ticker.get('last', 0)
+                        timestamp = current_ticker.get('timestamp', int(datetime.now().timestamp() * 1000))
+
+                        # [timestamp, open, high, low, close, volume]
+                        return [[timestamp, current_price, current_price, current_price, current_price, 0]]
+                except Exception as e2:
+                    logger.error(f"Alternative OHLCV method failed for {formatted_symbol}: {str(e2)}")
+
+            logger.error(f"Could not fetch OHLCV data for {formatted_symbol} using any available method")
+            return None
+
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {symbol}: {str(e)}")
             return None

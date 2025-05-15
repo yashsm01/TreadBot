@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -27,9 +27,22 @@ class CRUDPosition(CRUDBase[Position, PositionCreate, PositionUpdate]):
         result = await db.execute(select(Position).where(Position.status == "CLOSED"))
         return list(result.scalars().all())
 
-    async def get_by_symbol_and_status(self, db: AsyncSession, symbol: str, status: str) -> Optional[Position]:
-        result = await db.execute(select(Position).where(Position.symbol == symbol, Position.status == status))
-        return result.scalar_one_or_none()
+    async def get_by_symbol_and_status(
+        self, db: AsyncSession, *, symbol: str, status: Union[str, List[str]]
+    ) -> Optional[Position]:
+        """Get a position by symbol and status"""
+        stmt = select(Position).where(
+            Position.symbol == symbol,
+        )
+
+        if isinstance(status, list):
+            stmt = stmt.where(Position.status.in_(status))
+        else:
+            stmt = stmt.where(Position.status == status)
+
+        stmt = stmt.order_by(Position.id.desc()).limit(1)
+        result = await db.execute(stmt)
+        return result.scalars().first()
 
     async def get_by_status(self, db: AsyncSession, status: str) -> List[Position]:
         result = await db.execute(select(Position).where(Position.status == status))
@@ -44,24 +57,13 @@ class CRUDPosition(CRUDBase[Position, PositionCreate, PositionUpdate]):
         await db.refresh(position)
         return position
 
-    async def get_by_symbol_and_status(
-        self, db: AsyncSession, *, symbol: str, status: str
-    ) -> Optional[Position]:
-        """Get a position by symbol and status"""
-        stmt = select(Position).where(
-            Position.symbol == symbol,
-            Position.status == status
-        )
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none()
-
     async def get_position_by_symbol(
         self, db: AsyncSession, *, symbol: str
     ) -> Optional[Position]:
         """Get the latest position for a symbol"""
         stmt = select(Position).where(
             Position.symbol == symbol
-        ).order_by(Position.created_at.desc())
+        ).order_by(Position.id.desc()).limit(1)
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 

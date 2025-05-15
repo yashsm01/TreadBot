@@ -15,6 +15,7 @@ from app.services.helper.heplers import helpers
 from app.services.helper.binance_helper import binance_helper
 from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
 from app.services.notifications import notification_service
+from app.services.market_analyzer import market_analyzer
 from app.services.swap_service import swap_service
 
 from app.crud.crud_telegram import telegram_user as telegram_user
@@ -25,6 +26,7 @@ class StraddleStrategy:
         self.breakout_threshold = settings.DEFAULT_TP_PCT / 100  # 1% breakout threshold
         self.min_confidence = settings.DEFAULT_SL_PCT / 100  # Minimum confidence for breakout signals
         self.position_size = 1.0  # Default position size in base currency
+
 
     def calculate_entry_levels(self, current_price: float) -> Tuple[float, float]:
         """Calculate entry levels for straddle"""
@@ -57,6 +59,9 @@ class StraddleStrategy:
 
         return round(take_profit, 2), round(stop_loss, 2)
 class StraddleService:
+    # Make straddle_status a class variable so it's shared across all instances
+    straddle_status = False
+
     def __init__(self, db: AsyncSession):
         self.db = db
         self.strategy = StraddleStrategy()
@@ -102,7 +107,8 @@ class StraddleService:
     async def create_straddle_trades(self,
                                    symbol: str,
                                    current_price: float,
-                                   quantity: float) -> List[Trade]:
+                                   quantity: float,
+                                   position_id: int) -> List[Trade]:
         """Create a pair of straddle trades based on current market conditions"""
         try:
             buy_entry, sell_entry = self.strategy.calculate_entry_levels(current_price)
@@ -117,7 +123,8 @@ class StraddleService:
                 take_profit=buy_tp,
                 stop_loss=buy_sl,
                 status="PENDING",
-                order_type="STOP"
+                order_type="STOP",
+                position_id=position_id
             )
             long_trade_db = await trade_crud.create(self.db, obj_in=long_trade)
 
@@ -131,7 +138,8 @@ class StraddleService:
                 take_profit=sell_tp,
                 stop_loss=sell_sl,
                 status="PENDING",
-                order_type="STOP"
+                order_type="STOP",
+                position_id=position_id
             )
             short_trade_db = await trade_crud.create(self.db, obj_in=short_trade)
 
@@ -348,7 +356,7 @@ class StraddleService:
 
             #check if there is a straddle position already
             open_positions = await position_crud.get_by_symbol_and_status(
-                self.db, symbol=symbol, status="OPEN"
+                self.db, symbol=symbol, status=["OPEN"]
             )
             if open_positions:
                 logger.info(f"Straddle position already exists for {symbol}, skipping auto buy/sell")
@@ -382,38 +390,73 @@ class StraddleService:
 
     async def auto_buy_sell_straddle_close(self, symbol: str) -> List[Trade]:
         """Auto close straddle position for a given symbol"""
-        x = await telegram_user.get_by_telegram_id(self.db, telegram_id=505504650)
-        print(x)
-        position = await position_crud.get_by_symbol_and_status(
-            self.db, symbol=symbol, status="OPEN"
-        )
-        if position:
-            await self.close_straddle_trades(symbol)
-        else:
-            logger.info(f"No open straddle position found for {symbol}")
-            return []
-        return position
+        try:
+            # Get positions with status OPEN or IN_PROGRESS
+            position = await position_crud.get_by_symbol_and_status(
+                self.db, symbol=symbol, status=["OPEN", "IN_PROGRESS"]
+            )
+
+            if not position:
+                logger.info(f"No open straddle position found for {symbol}")
+                return []
+
+            # Close the trades
+            closed_trades = await self.close_straddle_trades(symbol)
+
+            # Update position status
+            if position:
+                updated_position = await position_crud.update(
+                    self.db,
+                    db_obj=position,
+                    obj_in={"status": "CLOSED"}
+                )
+                await self.db.refresh(updated_position)
+                logger.info(f"Successfully closed position for {symbol}")
+
+            return closed_trades
+        except Exception as e:
+            logger.error(f"Error closing straddle position for {symbol}: {str(e)}")
+            raise
 
     async def auto_buy_sell_straddle_inprogress(self, symbol: str) -> List[Trade]:
         """Auto buy or sell straddle based on market conditions"""
         try:
+            if not StraddleService.straddle_status:
+                logger.info(f"Straddle status is disabled, skipping auto buy/sell for {symbol}")
+                return []
+
             #check if there is a straddle position already
             open_positions = await position_crud.get_position_by_symbol(
                 self.db, symbol=symbol
             )
+            if not open_positions:
+                logger.info(f"No positions found for {symbol}")
+                return []
+
+            position_id = open_positions.id
             if open_positions.status == "CLOSED":
                 logger.info(f"Straddle position already closed for {symbol}, skipping auto buy/sell")
                 return []
+
             #get current price
             crypto_details = await binance_helper.get_price(symbol)
             current_price = crypto_details["price"]
+
             #get quentity from portfolio
             protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
             quantity = protfolo_details.quantity
 
+            # Define profit percentage thresholds for more dynamic decision making
+            PROFIT_THRESHOLD_SMALL = 0.01    # 1% profit threshold for small moves (more sensitive)
+            PROFIT_THRESHOLD_MEDIUM = 0.025  # 2.5% profit threshold for medium moves
+            PROFIT_THRESHOLD_LARGE = 0.04    # 4% profit threshold for large moves
+
+            # Define price pattern thresholds
+            CONSECUTIVE_PRICE_INCREASES_THRESHOLD = 3  # Number of consecutive price increases to consider a trend
+            PRICE_VOLATILITY_THRESHOLD = 0.015  # 1.5% volatility threshold
 
             if open_positions.status == "OPEN":
-                await self.create_straddle_trades(symbol,current_price, quantity)
+                trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
                 await self.db.refresh(open_positions)
                 logger.info(f"No open straddle position exists for {symbol}, proceeding with auto buy/sell")
                 #update the position status to in progress
@@ -427,42 +470,151 @@ class StraddleService:
                 )
                 await self.db.refresh(updated_position)
                 logger.info(f"Updated position status to IN_PROGRESS for {symbol}")
-                # return updated_position
+                return trades
 
-            #get treas from symbol
-            treas = await trade_crud.get_multi_by_symbol_and_status(
+            #get trades from symbol
+            trades = await trade_crud.get_multi_by_symbol_and_status(
                 self.db, symbol=symbol, status=["PENDING"]
             )
-            if not treas:
-                await self.create_straddle_trades(symbol,current_price, quantity)
-                logger.info(f"No open treas found for {symbol}, proceeding with auto buy/sell")
-                return []
+            if not trades:
+                return await self.create_straddle_trades(symbol, current_price, quantity, position_id)
 
+            #filter the trades by side buy and status open
+            buy_trades = [trade for trade in trades if trade.side == "BUY" and trade.status == "PENDING"]
+            sell_trades = [trade for trade in trades if trade.side == "SELL" and trade.status == "PENDING"]
 
-            #filter the treas by side buy and status open
-            treas_buy = [treas for treas in treas if treas.side == "BUY" and treas.status == "PENDING"]
-            treas_sell = [treas for treas in treas if treas.side == "SELL" and treas.status == "PENDING"]
+            if not buy_trades or not sell_trades:
+                logger.info(f"Missing buy or sell trades for {symbol}, recreating straddle")
+                return await self.create_straddle_trades(symbol, current_price, quantity, position_id)
 
-            if current_price > treas_buy[0].entry_price:
-                # close old treas
-                await self.close_straddle_trades(symbol)
-                #close the treas_sell
-                await self.create_straddle_trades(symbol,current_price, quantity)
+            # Get price trend history to make smarter decisions
+            recent_price_data = await market_analyzer.get_price_data(symbol, interval="5m", limit=10)
+            # Extract close prices
+            recent_prices = recent_price_data['close'].tolist()
+            price_changes = [recent_prices[i] - recent_prices[i-1] for i in range(1, len(recent_prices))]
+            price_direction = "up" if sum(price_changes) > 0 else "down"
 
+            # Count consecutive increases/decreases to detect trend strength
+            consecutive_same_direction = 1
+            for i in range(1, len(price_changes)):
+                if (price_changes[i] > 0 and price_changes[i-1] > 0) or (price_changes[i] < 0 and price_changes[i-1] < 0):
+                    consecutive_same_direction += 1
+                else:
+                    break
 
-            if current_price < treas_sell[0].entry_price:
-                # close old treas
-                await self.close_straddle_trades(symbol)
-                #close the treas_sell
-                await self.create_straddle_trades(symbol,current_price, quantity)
-                #swap the symbol to stable coin
-                await swap_service.swap_symbol_stable_coin(symbol, quantity, current_price)
+            # Calculate price volatility
+            price_volatility = (max(recent_prices) - min(recent_prices)) / min(recent_prices)
 
-            logger.info(f"Straddle position already exists for {symbol}, skipping auto buy/sell")
-            return open_positions
+            # Calculate potential profit percentages with safety checks
+            try:
+                buy_profit_pct = (current_price - buy_trades[0].entry_price) / buy_trades[0].entry_price if buy_trades[0].entry_price > 0 else 0
+                sell_profit_pct = (sell_trades[0].entry_price - current_price) / sell_trades[0].entry_price if sell_trades[0].entry_price > 0 else 0
+            except Exception as e:
+                logger.error(f"Error calculating profit percentages: {str(e)}")
+                buy_profit_pct = 0
+                sell_profit_pct = 0
+
+            # Determine if we should close positions based on multiple factors
+            should_close_buy = False
+            should_close_sell = False
+            should_swap_to_stable = False
+            should_swap_from_stable = False
+
+            # Dynamic threshold based on trend strength and volatility
+            dynamic_threshold = PROFIT_THRESHOLD_SMALL
+            if consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
+                dynamic_threshold = PROFIT_THRESHOLD_MEDIUM
+            if price_volatility >= PRICE_VOLATILITY_THRESHOLD:
+                dynamic_threshold = PROFIT_THRESHOLD_LARGE
+
+            # Profitable BUY condition - if price has increased enough from our buy entry
+            if buy_profit_pct >= dynamic_threshold:
+                should_close_buy = True
+
+                # If price is trending up strongly, consider keeping some position
+                if price_direction == "up" and consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
+                    # Only swap half to stablecoin to keep some exposure to further upside
+                    should_swap_to_stable = True
+
+            # Profitable SELL condition - if price has decreased enough from our sell entry
+            if sell_profit_pct >= dynamic_threshold:
+                should_close_sell = True
+
+                # If price is trending down strongly, consider swapping all to stablecoin
+                if price_direction == "down" and consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
+                    should_swap_to_stable = True
+
+            # If price rebounds after a downtrend, buy back in
+            if price_direction == "up" and consecutive_same_direction >= 2 and should_swap_to_stable:
+                should_swap_from_stable = True
+
+            # Execute the determined strategy
+            if (should_close_buy or should_close_sell) and current_price > buy_trades[0].entry_price:
+                logger.info(f"Closing positions for {symbol} due to price increase to {current_price} from {buy_trades[0].entry_price}")
+                # close old trades
+                closed_trades = await self.close_straddle_trades(symbol)
+                # create new straddle trades
+                new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
+
+                # If we've made significant profit and price trending up, could hold position
+                if buy_profit_pct >= PROFIT_THRESHOLD_MEDIUM and price_direction == "up":
+                    logger.info(f"Holding {symbol} position due to strong uptrend, profit: {buy_profit_pct*100:.2f}%")
+                return new_trades
+
+            if (should_close_buy or should_close_sell) and current_price < sell_trades[0].entry_price:
+                logger.info(f"Closing positions for {symbol} due to price decrease to {current_price} from {sell_trades[0].entry_price}")
+                # close old trades
+                closed_trades = await self.close_straddle_trades(symbol)
+
+                # Create new trades at current level
+                new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
+
+                # If price is declining significantly, swap to stablecoin
+                if should_swap_to_stable:
+                    logger.info(f"Swapping {symbol} to stablecoin due to downtrend, profit: {sell_profit_pct*100:.2f}%")
+
+                    # Determine swap amount based on trend severity
+                    swap_percentage = 0.5  # Default 50%
+                    if consecutive_same_direction >= 4 or price_volatility >= 0.04:
+                        swap_percentage = 1.0  # Swap 100% in severe downtrends
+
+                    swap_amount = quantity * swap_percentage
+                    if swap_amount > 0:
+                        await swap_service.swap_symbol_stable_coin(symbol, swap_amount, current_price)
+
+                # If we've started seeing a reversal after swapping to stable, consider swapping back
+                if should_swap_from_stable and consecutive_same_direction >= 3:
+                    # Get available stablecoins
+                    stable_coin_data = await binance_helper.get_best_stable_coin()
+                    stable_coin = stable_coin_data["best_stable"]
+
+                    # Check if we have this stablecoin in portfolio
+                    stable_portfolio = await portfolio_crud.get_by_symbol(self.db, symbol=stable_coin)
+
+                    if stable_portfolio and stable_portfolio.quantity > 0:
+                        # Calculate amount to swap back - be conservative
+                        swap_back_percentage = 0.3  # Start with 30%
+                        if consecutive_same_direction >= 5:  # Strong reversal
+                            swap_back_percentage = 0.5  # Increase to 50%
+
+                        swap_amount = stable_portfolio.quantity * swap_back_percentage
+                        if swap_amount > 0:
+                            logger.info(f"Swapping back from {stable_coin} to {symbol} due to uptrend reversal")
+                            await swap_service.swap_stable_coin_symbol(stable_coin, symbol, swap_amount)
+
+                return new_trades
+
+            logger.info(f"Straddle position already exists for {symbol}, monitoring for opportunities")
+            return trades  # Return current trades
         except Exception as e:
-            logger.error(f"Error in auto_buy_sell_straddle_working: {str(e)}")
+            logger.error(f"Error in auto_buy_sell_straddle_inprogress: {str(e)}")
             raise
+
+    async def change_straddle_status(self):
+        # Use class name to access the class variable
+        StraddleService.straddle_status = not StraddleService.straddle_status
+        logger.info(f"Straddle status changed to {StraddleService.straddle_status}")
+        return StraddleService.straddle_status
 
 
 straddle_service = StraddleService(None)  # Will be initialized with DB session later

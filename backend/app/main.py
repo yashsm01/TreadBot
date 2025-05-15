@@ -19,7 +19,7 @@ from .models.crypto import Cryptocurrency, CryptoPair
 from .models.telegram import TelegramUser, TelegramNotification
 
 telegram_srv = True
-scheduler_srv = False
+scheduler_srv = True
 
 # Configure logging
 logging.basicConfig(
