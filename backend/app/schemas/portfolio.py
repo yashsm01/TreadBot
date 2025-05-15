@@ -20,6 +20,21 @@ class TransactionResponse(TransactionBase):
     class Config:
         from_attributes = True
 
+
+class PortfolioCreate(BaseModel):
+    symbol: str
+    quantity: float
+    avg_buy_price: float
+    last_updated: datetime
+    asset_type: str
+    entry_price: float
+    last_updated: datetime
+
+
+class PortfolioUpdate(BaseModel):
+    quantity: float
+    avg_buy_price: float
+
 class PortfolioPosition(BaseModel):
     symbol: str
     quantity: float

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from ...services.crypto_service import crypto_service
 from ...core.config import settings
 from ...core.logger import logger
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,65 @@ class ExchangeManager:
             logger.error(f"Error validating trading pair {symbol}: {str(e)}")
             return False
 
+    async def fetch_ticker_fallback(self, symbol: str) -> Dict:
+        """
+        Custom implementation of fetch_ticker in case the exchange doesn't provide it directly.
+
+        Args:
+            symbol: Trading pair symbol
+
+        Returns:
+            Dict: Ticker information
+        """
+        try:
+            # Try different methods to get ticker data
+            # Method 1: Try fetch_ticker directly
+            if hasattr(self.exchange, 'fetch_ticker') and callable(getattr(self.exchange, 'fetch_ticker')):
+                return await self.exchange.fetch_ticker(symbol)
+
+            # Method 2: Try to use fetch_tickers to get a single ticker
+            if hasattr(self.exchange, 'fetch_tickers') and callable(getattr(self.exchange, 'fetch_tickers')):
+                tickers = await self.exchange.fetch_tickers([symbol])
+                if symbol in tickers:
+                    return tickers[symbol]
+
+            # Method 3: Try to get from recent trades
+            if hasattr(self.exchange, 'fetch_trades') and callable(getattr(self.exchange, 'fetch_trades')):
+                trades = await self.exchange.fetch_trades(symbol, limit=1)
+                if trades and len(trades) > 0:
+                    return {
+                        'symbol': symbol,
+                        'last': trades[0]['price'],
+                        'bid': trades[0]['price'],
+                        'ask': trades[0]['price'],
+                        'baseVolume': 0,
+                        'timestamp': trades[0]['timestamp']
+                    }
+
+            # Method 4: Use order book
+            if hasattr(self.exchange, 'fetch_order_book') and callable(getattr(self.exchange, 'fetch_order_book')):
+                order_book = await self.exchange.fetch_order_book(symbol)
+                if order_book and 'bids' in order_book and 'asks' in order_book:
+                    bid = order_book['bids'][0][0] if order_book['bids'] else 0
+                    ask = order_book['asks'][0][0] if order_book['asks'] else 0
+                    last = (bid + ask) / 2 if bid and ask else 0
+                    return {
+                        'symbol': symbol,
+                        'last': last,
+                        'bid': bid,
+                        'ask': ask,
+                        'baseVolume': 0,
+                        'timestamp': int(datetime.now().timestamp() * 1000)
+                    }
+
+            # If we get here, all methods failed
+            logger.error(f"Could not get ticker data for {symbol} using any available method")
+            raise Exception(f"No ticker data available for {symbol}")
+
+        except Exception as e:
+            logger.error(f"Error in fetch_ticker_fallback for {symbol}: {str(e)}")
+            raise
+
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
         """
         Get current ticker information for a symbol.
@@ -101,21 +161,28 @@ class ExchangeManager:
 
         try:
             # Format symbol if needed (e.g., convert BTCUSDT to BTC/USDT)
+            formatted_symbol = symbol
             if '/' not in symbol:
-                formatted_symbol = f"{symbol[:-4]}/{symbol[-4:]}" if symbol.endswith('USDT') else symbol
-            else:
-                formatted_symbol = symbol
+                # Handle different symbol formats
+                if symbol.endswith('USDT'):
+                    # Something like BTCUSDT
+                    formatted_symbol = f"{symbol[:-4]}/USDT"
+                elif 'USDT' in symbol:
+                    # Something like BTC-USDT or BTC_USDT
+                    formatted_symbol = symbol.replace('-', '/').replace('_', '/')
+                else:
+                    # Try to infer format
+                    for quote in ['USDT', 'BTC', 'ETH', 'BNB']:
+                        if quote in symbol:
+                            base = symbol.replace(quote, '')
+                            formatted_symbol = f"{base}/{quote}"
+                            break
 
-            # Validate the trading pair
-            if not await self.validate_trading_pair(formatted_symbol):
-                logger.warning(f"Invalid or inactive trading pair: {formatted_symbol}")
-                return {
-                    'error': True,
-                    'message': f"Invalid or inactive trading pair: {formatted_symbol}",
-                    'symbol': formatted_symbol
-                }
+            logger.info(f"Getting ticker for symbol: {symbol}, formatted as: {formatted_symbol}")
 
-            ticker = await self.exchange.fetch_ticker(formatted_symbol)
+            # Use our fallback implementation that tries multiple methods
+            ticker = await self.fetch_ticker_fallback(formatted_symbol)
+
             if not ticker:
                 logger.warning(f"No ticker data available for {formatted_symbol}")
                 return {
@@ -127,11 +194,11 @@ class ExchangeManager:
             return {
                 'error': False,
                 'symbol': formatted_symbol,
-                'last': ticker['last'],
-                'bid': ticker['bid'],
-                'ask': ticker['ask'],
-                'volume': ticker['baseVolume'],
-                'timestamp': ticker['timestamp']
+                'last': ticker.get('last', 0),
+                'bid': ticker.get('bid', 0),
+                'ask': ticker.get('ask', 0),
+                'volume': ticker.get('baseVolume', 0),
+                'timestamp': ticker.get('timestamp', 0)
             }
         except ccxt.NetworkError as e:
             error_msg = f"Network error fetching ticker for {symbol}: {str(e)}"

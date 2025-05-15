@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from app.core.logger import logger
 from app.core.config import settings
 from app.crud.crud_trade import trade as trade_crud
-from app.crud.crud_portfolio import portfolio as portfolio_crud
+from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
 from app.services.helper.heplers import helpers
 from app.services.helper.binance_helper import binance_helper
 from app.schemas.portfolio import PortfolioCreate, PortfolioUpdate
@@ -269,5 +269,5 @@ class SwapService:
                 "error_details": str(e)
             }
 
-swap_service = SwapService()
+swap_service = SwapService(None)
 
