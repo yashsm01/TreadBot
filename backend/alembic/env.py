@@ -7,10 +7,11 @@ from alembic import context
 from app.core.config import settings
 
 # Import your models here
-from app.models.portfolio import Portfolio, Transaction
+from app.models.portfolio import Portfolio
 from app.models.trade import Trade
 from app.models.crypto import Cryptocurrency, CryptoPair
 from app.models.telegram import TelegramUser, TelegramNotification
+from app.models.swap_transaction import SwapTransaction
 from app.core.database import Base
 
 # this is the Alembic Config object, which provides

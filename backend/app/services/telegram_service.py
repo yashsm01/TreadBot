@@ -10,6 +10,7 @@ from telegram.ext import (
     filters
 )
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.config import settings
 from ..models.telegram import TelegramUser, TelegramNotification
 from ..crud.crud_telegram import telegram_user as user_crud
@@ -23,12 +24,22 @@ logger = logging.getLogger(__name__)
 class TelegramService:
     def __init__(
         self,
-        db: Session,
+        db: AsyncSession,
         market_analyzer: MarketAnalyzer,
         portfolio_service: PortfolioService,
         straddle_service: StraddleService,
         binance_helper: BinanceHelper
     ):
+        """
+        Initialize TelegramService with dependencies.
+
+        Args:
+            db (AsyncSession): SQLAlchemy async database session
+            market_analyzer (MarketAnalyzer): Service for market analysis
+            portfolio_service (PortfolioService): Service for portfolio management
+            straddle_service (StraddleService): Service for straddle positions
+            binance_helper (BinanceHelper): Helper for Binance API operations
+        """
         self.db = db
         self.market_analyzer = market_analyzer
         self.portfolio_service = portfolio_service
@@ -36,15 +47,47 @@ class TelegramService:
         self.binance_helper = binance_helper
         self.application = None
         self._initialized = False
+        self._semaphore = None  # Will be initialized in initialize()
+
+    # Helper method to handle DB transactions
+    async def _db_commit(self):
+        """Safely commit database transaction"""
+        try:
+            await self.db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error committing transaction: {str(e)}")
+            await self.db.rollback()
+            return False
+
+    # Helper method to handle DB rollbacks
+    async def _db_rollback(self):
+        """Safely rollback database transaction"""
+        try:
+            await self.db.rollback()
+            return True
+        except Exception as e:
+            logger.error(f"Error rolling back transaction: {str(e)}")
+            return False
 
     async def initialize(self):
         """Initialize the Telegram bot"""
+        # Prevent multiple initializations
+        if self._initialized:
+            logger.info("Telegram service already initialized")
+            return True
+
         try:
+            # Create semaphore for concurrency control
+            import asyncio
+            self._semaphore = asyncio.Semaphore(1)
+
             if not settings.TELEGRAM_BOT_TOKEN:
                 logger.warning("No Telegram bot token provided. Telegram functionality will be disabled.")
                 self._initialized = False
-                return
+                return False
 
+            logger.info("Initializing Telegram bot...")
             self.application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
 
             # Add command handlers
@@ -76,22 +119,26 @@ class TelegramService:
             self.application.add_handler(CommandHandler("24hstats", self.get_24h_stats))
             self.application.add_handler(CommandHandler("5mstats", self.get_5m_stats))
             self.application.add_handler(CommandHandler("5mpricehistory", self.get_5m_price_history))
+
             # Add fallback handler for unknown commands
             self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
 
+            logger.info("Initializing Telegram application...")
             await self.application.initialize()
             await self.application.start()
 
             # Start polling for updates
+            logger.info("Starting Telegram polling...")
             await self.application.updater.start_polling()
 
             self._initialized = True
             logger.info("Telegram bot initialized successfully")
+            return True
         except Exception as e:
-            logger.warning(f"Failed to initialize Telegram bot: {str(e)}")
+            logger.error(f"Failed to initialize Telegram bot: {str(e)}")
             self._initialized = False
             # Don't raise the exception, just continue without Telegram functionality
-            return
+            return False
 
     async def stop(self):
         """Stop the Telegram bot"""
@@ -110,41 +157,94 @@ class TelegramService:
         symbol: Optional[str] = None
     ):
         """Send notification to user"""
+        notification = None
         try:
+            # Create notification record
             notification = TelegramNotification(
                 user_id=user_id,
                 message_type=message_type,
                 symbol=symbol,
                 content=content
             )
-            notification_crud.create(self.db, obj_in=notification)
+            # Use transaction to ensure atomicity
+            self.db.add(notification)
+            try:
+                await self.db.flush()  # Flush to get the ID but don't commit yet
+            except Exception as e:
+                logger.error(f"Error flushing database: {str(e)}")
+                try:
+                    await self.db.rollback()
+                except:
+                    pass  # Ignore rollback errors
+                return False
 
-            user = user_crud.get_by_telegram_id(self.db, telegram_id=user_id)
-            if user and user.is_active:
-                await self.application.bot.send_message(
-                    chat_id=user.chat_id,
-                    text=content,
-                    parse_mode='Markdown'
-                )
-                notification.is_sent = True
-                self.db.commit()
+            # Get user and check if active
+            try:
+                user = await user_crud.get_by_telegram_id(self.db, telegram_id=user_id)
+                if user and user.is_active:
+                    # Send message via Telegram
+                    await self.application.bot.send_message(
+                        chat_id=user.chat_id,
+                        text=content,
+                        parse_mode='Markdown'
+                    )
+                    notification.is_sent = True
+            except Exception as e:
+                logger.error(f"Error getting user or sending message: {str(e)}")
+                # Continue to save the notification even if message sending fails
+
+            # Commit the transaction
+            try:
+                await self.db.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Error committing notification: {str(e)}")
+                try:
+                    await self.db.rollback()
+                except:
+                    pass  # Ignore rollback errors
+                return False
+
         except Exception as e:
             logger.error(f"Error sending notification: {str(e)}")
-            notification.error_message = str(e)
-            self.db.commit()
+            # Handle the exception by updating the notification with error message
+            if notification and hasattr(notification, 'id'):
+                notification.error_message = str(e)
+                try:
+                    await self.db.commit()
+                except:
+                    try:
+                        await self.db.rollback()
+                    except:
+                        pass  # Ignore rollback errors
+            else:
+                try:
+                    await self.db.rollback()
+                except:
+                    pass  # Ignore rollback errors
+            return False
 
     # Command Handlers
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         try:
             # Check if user already exists
-            existing_user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            existing_user = await user_crud.get_by_telegram_id(db=self.db, telegram_id=update.effective_user.id)
 
             if existing_user:
                 # Update existing user
                 existing_user.is_active = True
                 existing_user.last_interaction = datetime.utcnow()
-                self.db.commit()
+                self.db.add(existing_user)
+                try:
+                    await self.db.commit()
+                except Exception as e:
+                    logger.error(f"Error committing database changes: {str(e)}")
+                    try:
+                        await self.db.rollback()
+                    except:
+                        pass  # Ignore rollback errors
+
                 welcome_msg = (
                     "🤖 Welcome back to the Crypto Trading Bot!\n\n"
                     "Use /help to see available commands.\n"
@@ -157,7 +257,16 @@ class TelegramService:
                     chat_id=str(update.effective_chat.id),
                     username=update.effective_user.username
                 )
-                user_crud.create(self.db, obj_in=user)
+                self.db.add(user)
+                try:
+                    await self.db.commit()
+                except Exception as e:
+                    logger.error(f"Error committing database changes: {str(e)}")
+                    try:
+                        await self.db.rollback()
+                    except:
+                        pass  # Ignore rollback errors
+
                 welcome_msg = (
                     "🤖 Welcome to the Crypto Trading Bot!\n\n"
                     "Use /help to see available commands.\n"
@@ -167,36 +276,50 @@ class TelegramService:
             await update.message.reply_text(welcome_msg)
         except Exception as e:
             logger.error(f"Error handling start command: {str(e)}")
+            # Safely handle rollback
+            if self.db is not None:
+                try:
+                    await self.db.rollback()
+                except:
+                    pass  # Ignore rollback errors
             await update.message.reply_text("❌ Failed to start bot. Please try again.")
 
     async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop command"""
         try:
-            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            user = await user_crud.get_by_telegram_id(db=self.db, telegram_id=update.effective_user.id)
             if user:
                 user.is_active = False
-                self.db.commit()
+                self.db.add(user)
+                await self.db.commit()
                 await update.message.reply_text("🔕 Notifications stopped. Use /start to reactivate.")
+            else:
+                await update.message.reply_text("❌ You need to start the bot first with /start")
         except Exception as e:
             logger.error(f"Error handling stop command: {str(e)}")
+            await self.db.rollback()
             await update.message.reply_text("❌ Failed to stop notifications.")
 
     async def _handle_update_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /update command"""
         try:
-            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            user = await user_crud.get_by_telegram_id(db=self.db, telegram_id=update.effective_user.id)
             if user:
                 user.last_interaction = datetime.utcnow()
-                self.db.commit()
+                self.db.add(user)
+                await self.db.commit()
                 await update.message.reply_text("✅ User information updated successfully.")
+            else:
+                await update.message.reply_text("❌ You need to start the bot first with /start")
         except Exception as e:
             logger.error(f"Error handling update command: {str(e)}")
+            await self.db.rollback()
             await update.message.reply_text("❌ Failed to update user information.")
 
     async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
         try:
-            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            user = await user_crud.get_by_telegram_id(db=self.db, telegram_id=update.effective_user.id)
             if user:
                 status_msg = (
                     f"📊 Bot Status\n\n"
@@ -322,7 +445,7 @@ Example usage:
                 return
 
             # Get user from database
-            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            user = await user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
             if not user:
                 await update.message.reply_text("❌ Please start the bot first with /start")
                 return
@@ -383,7 +506,7 @@ Example usage:
                 return
 
             # Get user from database
-            user = user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            user = await user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
             if not user:
                 await update.message.reply_text("❌ Please start the bot first with /start")
                 return
@@ -739,20 +862,85 @@ Example usage:
             logger.error(f"Error handling 5m price history command: {str(e)}")
             await update.message.reply_text("❌ Failed to get 5m price history information.")
 
-def create_telegram_service(db: Session) -> TelegramService:
-    """Create a new instance of TelegramService with all required dependencies"""
-    market_analyzer = MarketAnalyzer()
-    portfolio_service = PortfolioService(db)
-    straddle_service = StraddleService(db)
-    binance_helper = BinanceHelper()
-    return TelegramService(
-        db=db,
-        market_analyzer=market_analyzer,
-        portfolio_service=portfolio_service,
-        straddle_service=straddle_service,
-        binance_helper=binance_helper
-    )
+    async def with_concurrency_control(self, func, *args, **kwargs):
+        """
+        Execute a function with concurrency control to prevent overlap.
+
+        Args:
+            func: The async function to execute
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            The result of the function execution
+        """
+        if not self._semaphore:
+            import asyncio
+            self._semaphore = asyncio.Semaphore(1)
+
+        async with self._semaphore:
+            return await func(*args, **kwargs)
+
+    # Decorator for command handlers to prevent overlapping execution
+    def command_handler(self, func):
+        """
+        Decorator to add concurrency control and error handling to command handlers.
+
+        Args:
+            func: The command handler function to wrap
+
+        Returns:
+            Wrapped function with concurrency control and error handling
+        """
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            try:
+                return await self.with_concurrency_control(func, update, context)
+            except Exception as e:
+                logger.error(f"Error in command handler {func.__name__}: {str(e)}")
+                # Try to notify the user
+                try:
+                    await update.message.reply_text(f"❌ An error occurred: {str(e)}")
+                except:
+                    pass
+
+        return wrapper
+
+def create_telegram_service(db: AsyncSession) -> TelegramService:
+    """
+    Create a new instance of TelegramService with all required dependencies.
+
+    Args:
+        db (AsyncSession): SQLAlchemy async database session
+
+    Returns:
+        TelegramService: Configured but not initialized service instance
+    """
+    try:
+        logger.info("Creating TelegramService instance...")
+        market_analyzer = MarketAnalyzer()
+        portfolio_service = PortfolioService(db)
+        straddle_service = StraddleService(db)
+        binance_helper = BinanceHelper()
+
+        service = TelegramService(
+            db=db,
+            market_analyzer=market_analyzer,
+            portfolio_service=portfolio_service,
+            straddle_service=straddle_service,
+            binance_helper=binance_helper
+        )
+        logger.info("TelegramService instance created successfully")
+        return service
+    except Exception as e:
+        logger.error(f"Error creating TelegramService: {str(e)}")
+        # Return a minimal service that will not crash the application
+        return TelegramService(
+            db=db,
+            market_analyzer=MarketAnalyzer(),
+            portfolio_service=PortfolioService(db),
+            straddle_service=StraddleService(db),
+            binance_helper=BinanceHelper()
+        )
 
 # Initialize as None, will be created properly in main.py
-
 telegram_service = None

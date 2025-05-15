@@ -17,6 +17,8 @@ from app.services.helper.market_analyzer import MarketAnalyzer, BreakoutSignal
 from app.services.notifications import notification_service
 from app.services.swap_service import swap_service
 
+from app.crud.crud_telegram import telegram_user as telegram_user
+
 
 class StraddleStrategy:
     def __init__(self):
@@ -380,6 +382,8 @@ class StraddleService:
 
     async def auto_buy_sell_straddle_close(self, symbol: str) -> List[Trade]:
         """Auto close straddle position for a given symbol"""
+        x = await telegram_user.get_by_telegram_id(self.db, telegram_id=505504650)
+        print(x)
         position = await position_crud.get_by_symbol_and_status(
             self.db, symbol=symbol, status="OPEN"
         )

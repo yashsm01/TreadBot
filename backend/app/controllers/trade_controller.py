@@ -1,5 +1,6 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 from app.services.trade_service import trade_service
 from app.services.telegram_service import telegram_service
@@ -8,7 +9,7 @@ from datetime import datetime
 
 class TradeController:
     @staticmethod
-    async def create_trade(db: Session, trade_data: trade_schemas.TradeCreate) -> trade_schemas.Trade:
+    async def create_trade(db: AsyncSession, trade_data: trade_schemas.TradeCreate) -> trade_schemas.Trade:
         """Create a new trade and send notification"""
         try:
             trade = await trade_service.create_trade(db, trade_data)
@@ -29,7 +30,7 @@ class TradeController:
 
     @staticmethod
     async def close_trade(
-        db: Session, trade_id: int, exit_price: float
+        db: AsyncSession, trade_id: int, exit_price: float
     ) -> trade_schemas.Trade:
         """Close a trade and send notification"""
         try:
@@ -59,7 +60,7 @@ class TradeController:
 
     @staticmethod
     async def get_trades(
-        db: Session,
+        db: AsyncSession,
         skip: int = 0,
         limit: int = 100,
         symbol: Optional[str] = None,

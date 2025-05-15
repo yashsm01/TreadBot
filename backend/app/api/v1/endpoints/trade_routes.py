@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Dict
 from ....core.database import get_db
 from ....services.portfolio_service import portfolio_service
@@ -8,7 +9,7 @@ router = APIRouter()
 
 @router.get("/", response_model=List[Dict])
 async def get_trades(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     skip: int = 0,
     limit: int = 100
 ):
@@ -21,7 +22,7 @@ async def get_trades(
 @router.get("/{trade_id}", response_model=Dict)
 async def get_trade(
     trade_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Get a specific trade by ID"""
     try:

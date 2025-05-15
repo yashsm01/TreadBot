@@ -5,9 +5,11 @@ from app.core.logger import logger
 from app.core.config import settings
 from app.crud.crud_trade import trade as trade_crud
 from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
+from app.crud.crud_swap_transaction import swap_transaction_crud
 from app.services.helper.heplers import helpers
 from app.services.helper.binance_helper import binance_helper
 from app.schemas.portfolio import PortfolioCreate, PortfolioUpdate
+from app.schemas.swap_transaction import SwapTransactionCreate
 
 
 class SwapService:
@@ -125,8 +127,22 @@ class SwapService:
                 "status": "completed"
             }
 
-            # In a real implementation, you might store this in a transactions table
-            logger.info(f"Swap transaction completed: {transaction_details}")
+            # Store the transaction in the swap_transactions table
+            swap_transaction = SwapTransactionCreate(
+                transaction_id=transaction_details["transaction_id"],
+                from_symbol=transaction_details["from_symbol"],
+                to_symbol=transaction_details["to_symbol"],
+                from_amount=transaction_details["from_amount"],
+                to_amount=transaction_details["to_amount"],
+                rate=transaction_details["rate"],
+                fee_percentage=transaction_details["fee_percentage"],
+                fee_amount=transaction_details["fee_amount"],
+                timestamp=transaction_time,
+                status=transaction_details["status"],
+                user_id=1  # Default user_id, could be passed as a parameter
+            )
+            await swap_transaction_crud.create(self.db, obj_in=swap_transaction)
+            logger.info(f"Swap transaction stored in database: {transaction_details}")
 
             return {
                 "status": "success",
@@ -252,8 +268,22 @@ class SwapService:
                 "status": "completed"
             }
 
-            # In a real implementation, you might store this in a transactions table
-            logger.info(f"Swap transaction completed: {transaction_details}")
+            # Store the transaction in the swap_transactions table
+            swap_transaction = SwapTransactionCreate(
+                transaction_id=transaction_details["transaction_id"],
+                from_symbol=transaction_details["from_symbol"],
+                to_symbol=transaction_details["to_symbol"],
+                from_amount=transaction_details["from_amount"],
+                to_amount=transaction_details["to_amount"],
+                rate=transaction_details["rate"],
+                fee_percentage=transaction_details["fee_percentage"],
+                fee_amount=transaction_details["fee_amount"],
+                timestamp=transaction_time,
+                status=transaction_details["status"],
+                user_id=1  # Default user_id, could be passed as a parameter
+            )
+            await swap_transaction_crud.create(self.db, obj_in=swap_transaction)
+            logger.info(f"Swap transaction stored in database: {transaction_details}")
 
             return {
                 "status": "success",

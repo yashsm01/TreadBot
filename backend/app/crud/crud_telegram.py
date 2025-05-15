@@ -1,44 +1,56 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from ..models.telegram import TelegramUser, TelegramNotification
-from .base import CRUDBase
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.models.telegram import TelegramUser, TelegramNotification
+from app.crud.base import CRUDBase
 
 class CRUDTelegramUser(CRUDBase[TelegramUser, dict, dict]):
-    def get_by_telegram_id(self, db: Session, telegram_id: int) -> Optional[TelegramUser]:
+    async def get_by_telegram_id(self, db: AsyncSession, telegram_id: int) -> Optional[TelegramUser]:
         """Get user by Telegram ID"""
-        return db.query(TelegramUser).filter(TelegramUser.telegram_id == telegram_id).first()
+        stmt = select(TelegramUser).where(TelegramUser.telegram_id == telegram_id)
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def get_active_users(self, db: Session) -> List[TelegramUser]:
+    async def get_active_users(self, db: AsyncSession) -> List[TelegramUser]:
         """Get all active users"""
-        return db.query(TelegramUser).filter(TelegramUser.is_active == True).all()
+        stmt = select(TelegramUser).where(TelegramUser.is_active == True)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
 class CRUDTelegramNotification(CRUDBase[TelegramNotification, dict, dict]):
-    def get_pending_notifications(self, db: Session) -> List[TelegramNotification]:
+    async def get_pending_notifications(self, db: AsyncSession) -> List[TelegramNotification]:
         """Get all unsent notifications"""
-        return db.query(TelegramNotification).filter(TelegramNotification.is_sent == False).all()
+        stmt = select(TelegramNotification).where(TelegramNotification.is_sent == False)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
-    def mark_as_sent(self, db: Session, notification_id: int) -> TelegramNotification:
+    async def mark_as_sent(self, db: AsyncSession, notification_id: int) -> Optional[TelegramNotification]:
         """Mark notification as sent"""
-        notification = db.query(TelegramNotification).filter(TelegramNotification.id == notification_id).first()
+        stmt = select(TelegramNotification).where(TelegramNotification.id == notification_id)
+        result = await db.execute(stmt)
+        notification = result.scalar_one_or_none()
         if notification:
             notification.is_sent = True
-            db.commit()
+            db.add(notification)
+            await db.commit()
         return notification
 
-    def get_user_notifications(
+    async def get_user_notifications(
         self,
-        db: Session,
+        db: AsyncSession,
         user_id: int,
         limit: int = 100
     ) -> List[TelegramNotification]:
         """Get notifications for a specific user"""
-        return (
-            db.query(TelegramNotification)
-            .filter(TelegramNotification.user_id == user_id)
+        stmt = (
+            select(TelegramNotification)
+            .where(TelegramNotification.user_id == user_id)
             .order_by(TelegramNotification.sent_at.desc())
             .limit(limit)
-            .all()
         )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
 # Create instances
 telegram_user = CRUDTelegramUser(TelegramUser)

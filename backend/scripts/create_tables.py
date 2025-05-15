@@ -4,7 +4,7 @@ import os
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import Base, engine
+from app.core.database import Base, engine
 from app.models.crypto import Cryptocurrency, CryptoPair
 from app.core.logger import logger
 

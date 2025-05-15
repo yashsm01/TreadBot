@@ -1,8 +1,8 @@
 from sqlalchemy import Column, Integer, Float, String, DateTime
 from sqlalchemy.orm import relationship
+from app.core.database import Base
 from datetime import datetime
 
-from ..core.database import Base
 
 class Position(Base):
     """SQLAlchemy ORM model for Position"""

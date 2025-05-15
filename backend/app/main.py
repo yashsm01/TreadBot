@@ -1,9 +1,9 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
-from .database import SessionLocal, engine, Base
+from .core.database import SessionLocal, engine, Base, get_db
 from .core.config import settings
 from .api.v1.api import api_router
 from .services.telegram_service import create_telegram_service, telegram_service
@@ -13,7 +13,7 @@ from .services.portfolio_service import portfolio_service
 from .core.exchange.exchange_manager import exchange_manager
 
 # Import all models to ensure they are registered with Base
-from .models.portfolio import Portfolio, Transaction
+from .models.portfolio import Portfolio
 from .models.trade import Trade
 from .models.crypto import Cryptocurrency, CryptoPair
 from .models.telegram import TelegramUser, TelegramNotification
@@ -45,14 +45,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency to get DB session
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 # Initialize services with DB session
 @app.on_event("startup")
 async def startup_event():
@@ -60,46 +52,38 @@ async def startup_event():
     try:
         logger.info("Starting application initialization...")
 
-        # Force drop all tables and recreate them
-        # logger.info("Dropping all tables...")
-        # Base.metadata.drop_all(bind=engine)
-
-        # Create database tables
-        # logger.info("Creating database tables...")
-        # Base.metadata.create_all(bind=engine)
-
         # Initialize database session
-        db = SessionLocal()
-        logger.info("Database session initialized")
+        async with SessionLocal() as db:
+            logger.info("Database session initialized")
 
-        # Initialize exchange manager first
-        logger.info("Initializing exchange manager...")
-        exchange_manager.db = db
-        await exchange_manager.initialize()
-        logger.info("Exchange manager initialized successfully")
+            # Initialize exchange manager first
+            logger.info("Initializing exchange manager...")
+            exchange_manager.db = db
+            await exchange_manager.initialize()
+            logger.info("Exchange manager initialized successfully")
 
-        # Initialize other services with database session
-        logger.info("Initializing services...")
-        crypto_service.db = db
-        scheduler_service.db = db
-        portfolio_service.db = db
+            # Initialize other services with database session
+            logger.info("Initializing services...")
+            crypto_service.db = db
+            scheduler_service.db = db
+            portfolio_service.db = db
 
-        if(telegram_srv):
-            # Create and initialize telegram service
-            logger.info("Creating telegram service...")
-            global telegram_service
-            telegram_service = create_telegram_service(db)
+            if(telegram_srv):
+                # Create and initialize telegram service
+                logger.info("Creating telegram service...")
+                global telegram_service
+                telegram_service = create_telegram_service(db)
 
-            # Initialize Telegram bot
-            logger.info("Initializing Telegram bot...")
-            await telegram_service.initialize()
+                # Initialize Telegram bot
+                logger.info("Initializing Telegram bot...")
+                await telegram_service.initialize()
 
-        if(scheduler_srv):
-            # Start scheduler
-            logger.info("Starting scheduler...")
-            await scheduler_service.start()
+            if(scheduler_srv):
+                # Start scheduler
+                logger.info("Starting scheduler...")
+                await scheduler_service.start()
 
-        logger.info("Application startup completed successfully")
+            logger.info("Application startup completed successfully")
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
         raise

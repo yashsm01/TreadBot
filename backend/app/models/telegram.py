@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
-from ..database import Base
+from app.core.database import Base
+from datetime import datetime
 
 class TelegramUser(Base):
     __tablename__ = "telegram_users"
@@ -11,8 +11,8 @@ class TelegramUser(Base):
     chat_id = Column(String, unique=True, nullable=False)
     username = Column(String)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    last_interaction = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_interaction = Column(DateTime, default=datetime.utcnow)
 
 class TelegramNotification(Base):
     __tablename__ = "telegram_notifications"
@@ -22,7 +22,7 @@ class TelegramNotification(Base):
     message_type = Column(String, nullable=False)  # TRADE, ALERT, STRADDLE, SYSTEM
     symbol = Column(String)
     content = Column(String, nullable=False)
-    sent_at = Column(DateTime(timezone=True), server_default=func.now())
+    sent_at = Column(DateTime, default=datetime.utcnow)
     is_sent = Column(Boolean, default=False)
     error_message = Column(String)
 

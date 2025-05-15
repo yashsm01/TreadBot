@@ -252,7 +252,7 @@ async def auto_buy_sell_straddle_close(
     Auto close straddle position for a given symbol"""
     try:
         straddle_service = StraddleService(db)
-        trades = await straddle_service.auto_close_straddle_position(params.symbol)
+        trades = await straddle_service.auto_buy_sell_straddle_close(params.symbol)
         return trades
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

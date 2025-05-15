@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict
 from ....core.database import get_db
 from ....services.telegram_service import telegram_service
@@ -9,7 +10,7 @@ router = APIRouter()
 @router.post("/webhook")
 async def telegram_webhook(
     update_data: Dict,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Handle Telegram webhook updates"""
     try:
@@ -20,7 +21,7 @@ async def telegram_webhook(
 
 @router.get("/status")
 async def telegram_status(
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Get Telegram bot status"""
     try:

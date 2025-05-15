@@ -1,9 +1,10 @@
 import logging
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
-from app.crud.crud_portfolio import transaction_crud as transaction_crud
+from app.crud.curd_transaction import transaction_crud as transaction_crud
 from app.core.exchange.exchange_manager import exchange_manager
 from app.core.logger import logger
 from app.services.market_analyzer import market_analyzer as market_analyzer
@@ -14,7 +15,7 @@ from app.crud.crud_trade import trade as trade_crud
 from app.services.notifications import notification_service
 
 class PortfolioService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.exchange_manager = exchange_manager
 
@@ -56,15 +57,15 @@ class PortfolioService:
 
     @staticmethod
     async def get_position_metrics(
-        db: Session,
+        db: AsyncSession,
         symbol: Optional[str] = None
     ) -> List[Dict]:
         """Get detailed metrics for positions"""
         try:
             if symbol:
-                positions = position_crud.get_by_symbol(db, symbol=symbol)
+                positions = await position_crud.get_by_symbol(db, symbol=symbol)
             else:
-                positions = position_crud.get_multi(db)
+                positions = await position_crud.get_multi(db)
 
             metrics = []
             for pos in positions:
@@ -92,7 +93,7 @@ class PortfolioService:
 
     @staticmethod
     async def get_trading_performance(
-        db: Session,
+        db: AsyncSession,
         days: int = 30
     ) -> Dict:
         """Get trading performance statistics"""
@@ -100,7 +101,7 @@ class PortfolioService:
             start_date = datetime.utcnow() - timedelta(days=days)
 
             # Get trades within date range
-            trades = trade_crud.get_multi(db)
+            trades = await trade_crud.get_multi(db)
             recent_trades = [
                 t for t in trades
                 if t.entry_time >= start_date
@@ -149,18 +150,13 @@ class PortfolioService:
                 savepoint = self.db.begin_nested()
 
             try:
-                # Check risk limits
-                # risk_check = await self.check_risk_limits(user_id, symbol, quantity, price)
-                # if not risk_check['position_size_ok'] or not risk_check['volatility_ok']:
-                #     raise ValueError("Trade exceeds risk limits")
-
                 # Get or create portfolio
-                portfolio = portfolio_crud.get_by_user_and_symbol(self.db, user_id, symbol)
+                portfolio = await portfolio_crud.get_by_user_and_symbol(db=self.db, symbol=symbol, user_id=user_id)
 
                 if not portfolio:
                     if type.upper() == 'SELL':
                         raise ValueError("Cannot sell without existing position")
-                    portfolio = portfolio_crud.create(
+                    portfolio = await portfolio_crud.create(
                         self.db,
                         obj_in={
                             "user_id": user_id,
@@ -174,9 +170,9 @@ class PortfolioService:
                 if type.upper() == 'SELL' and quantity > portfolio.quantity:
                     raise ValueError(f"Insufficient quantity. Available: {portfolio.quantity}")
 
-                # Create transaction
-                transaction = transaction_crud.create_transaction(
-                    self.db,
+                # Update portfolio with async methods
+                transaction = await transaction_crud.create_transaction(
+                    db=self.db,
                     user_id=user_id,
                     portfolio_id=portfolio.id,
                     symbol=symbol,
@@ -184,10 +180,10 @@ class PortfolioService:
                     quantity=quantity,
                     price=price
                 )
-
+                await self.db.refresh(portfolio)
                 # Update portfolio
-                portfolio = portfolio_crud.update_portfolio(
-                    self.db,
+                portfolio = await portfolio_crud.update_portfolio(
+                    db=self.db,
                     portfolio=portfolio,
                     type=type,
                     quantity=quantity,
@@ -196,8 +192,8 @@ class PortfolioService:
 
                 # Commit the transaction
                 if hasattr(self.db, 'commit'):
-                    self.db.commit()
-
+                    await self.db.commit()
+                await self.db.refresh(transaction)
                 return {
                     "status": "success",
                     "transaction_id": transaction.id,
@@ -210,16 +206,16 @@ class PortfolioService:
 
             except Exception as e:
                 if hasattr(self.db, 'rollback'):
-                    self.db.rollback()
+                    await self.db.rollback()
                 raise e
             finally:
                 if hasattr(self.db, 'close'):
-                    self.db.close()
+                    await self.db.close()
 
         except Exception as e:
             logger.error(f"Error adding transaction: {str(e)}")
             if hasattr(self.db, 'rollback'):
-                self.db.rollback()
+                await self.db.rollback()
             raise
 
     async def get_portfolio(self, user_id: int) -> Dict:
@@ -235,7 +231,7 @@ class PortfolioService:
 
             try:
                 # Get portfolio items with quantity > 0
-                portfolio_items_db = portfolio_crud.get_user_portfolio(self.db, user_id)
+                portfolio_items_db = await portfolio_crud.get_user_portfolio(db=self.db, user_id=user_id)
 
                 # Initialize exchange manager if needed
                 if not self.exchange_manager._initialized:
@@ -270,7 +266,7 @@ class PortfolioService:
                     })
 
                 if hasattr(self.db, 'commit'):
-                    self.db.commit()
+                    await self.db.commit()
 
                 return {
                     "portfolio": portfolio_items,
@@ -283,16 +279,16 @@ class PortfolioService:
                 }
             except Exception as e:
                 if hasattr(self.db, 'rollback'):
-                    self.db.rollback()
+                    await self.db.rollback()
                 raise e
             finally:
                 if hasattr(self.db, 'close'):
-                    self.db.close()
+                    await self.db.close()
 
         except Exception as e:
             logger.error(f"Error getting portfolio: {str(e)}")
             if hasattr(self.db, 'rollback'):
-                self.db.rollback()
+                await self.db.rollback()
             raise
 
     async def get_transaction_history(
@@ -304,7 +300,8 @@ class PortfolioService:
     ) -> List[Dict]:
         """Get user's transaction history"""
         try:
-            transactions = transaction_crud.get_user_transactions(
+            # Get transactions using async pattern
+            transactions = await transaction_crud.get_user_transactions(
                 self.db,
                 user_id=user_id,
                 symbol=symbol,
@@ -329,7 +326,7 @@ class PortfolioService:
         """Get profit/loss summary for specified timeframe"""
         try:
             # Get transaction summary
-            summary = transaction_crud.get_profit_summary(self.db, user_id, timeframe)
+            summary = await transaction_crud.get_profit_summary(self.db, user_id, timeframe)
 
             # Get current portfolio value
             portfolio = await self.get_portfolio(user_id)
@@ -390,7 +387,7 @@ class PortfolioService:
     async def get_straddle_positions(self, user_id: int, symbol: Optional[str] = None) -> List[Dict]:
         """Get all active straddle positions for a user"""
         try:
-            transactions = transaction_crud.get_straddle_transactions(self.db, user_id, symbol)
+            transactions = await transaction_crud.get_straddle_transactions(self.db, user_id, symbol)
 
             positions = []
             straddle_pairs = {}
@@ -433,7 +430,7 @@ class PortfolioService:
 
     async def execute_trade(
         self,
-        db: Session,
+        db: AsyncSession,
         symbol: str,
         quantity: float,
         side: str,

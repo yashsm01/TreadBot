@@ -6,7 +6,7 @@ import platform
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.core.database import SessionLocal
 from app.services.crypto_service import CryptoService
 from app.core.logger import logger
 

@@ -1,41 +1,55 @@
 from typing import List, Optional, Dict
-from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 from datetime import datetime, timedelta
-from ..models.portfolio import Portfolio, Transaction
-from .base import CRUDBase
+from app.models.portfolio import Portfolio
+from app.crud.base import CRUDBase
 from app.services.helper.heplers import helpers
+from app.schemas.portfolio import PortfolioCreate, PortfolioUpdate
+import logging
 
-class CRUDPortfolio(CRUDBase[Portfolio, Dict, Dict]):
-    async def get_by_user_and_symbol(
+logger = logging.getLogger(__name__)
+
+class CRUDPortfolio(CRUDBase[Portfolio, PortfolioCreate, PortfolioUpdate]):
+
+    async def get_by_user_and_symbol(self, db: AsyncSession, symbol: str, user_id: int = 1) -> Optional[Portfolio]:
+        """Get portfolio by user ID and symbol"""
+        try:
+            stmt = select(Portfolio).where(
+                Portfolio.symbol == symbol,
+                Portfolio.user_id == user_id
+            ).order_by(Portfolio.id.desc())
+            result = await db.execute(stmt)
+            return result.scalars().first()
+        except Exception as e:
+            logger.error(f"Error in get_by_user_and_symbol: {str(e)}")
+            return None
+
+    async def get_all_for_user(self, db: AsyncSession, skip: int = 0, limit: int = 100) -> List[Portfolio]:
+        """Get all portfolios for a specific user"""
+        stmt = select(Portfolio).order_by(Portfolio.id).offset(skip).limit(limit)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def find_or_create(self, db: AsyncSession, symbol: str, obj_in: PortfolioCreate) -> Portfolio:
+        """Find existing portfolio or create a new one"""
+        portfolio = await self.get_by_user_and_symbol(db, symbol=symbol)
+        if portfolio:
+            return portfolio
+        return await self.create(db, obj_in=obj_in)
+
+    async def get_user_portfolio(self, db: AsyncSession, user_id: int, active_only: bool = True) -> List[Portfolio]:
+        """Get all portfolio entries for a user"""
+        stmt = select(Portfolio).filter(Portfolio.user_id == user_id)
+        if active_only:
+            stmt = stmt.filter(Portfolio.quantity > 0)
+
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update_portfolio(
         self,
         db: AsyncSession,
-        user_id: int = 1,
-        symbol: str = None
-    ) -> Portfolio:
-        """Get portfolio entry by user_id and symbol"""
-        result = await db.execute(select(Portfolio).filter(
-            Portfolio.user_id == user_id,
-            Portfolio.symbol == symbol
-        ))
-        return result.scalars().first()
-
-    def get_user_portfolio(
-        self,
-        db: Session,
-        user_id: int,
-        active_only: bool = True
-    ) -> List[Portfolio]:
-        """Get all portfolio entries for a user"""
-        query = db.query(Portfolio).filter(Portfolio.user_id == user_id)
-        if active_only:
-            query = query.filter(Portfolio.quantity > 0)
-        return query.all()
-
-    def update_portfolio(
-        self,
-        db: Session,
         portfolio: Portfolio,
         type: str,
         quantity: float,
@@ -51,102 +65,12 @@ class CRUDPortfolio(CRUDBase[Portfolio, Dict, Dict]):
             portfolio.quantity -= quantity
 
         portfolio.last_updated = helpers.get_current_ist_for_db()
-        db.commit()
-        db.refresh(portfolio)
+        db.add(portfolio)
+        await db.commit()
+        await db.refresh(portfolio)
         return portfolio
 
-class CRUDTransaction(CRUDBase[Transaction, Dict, Dict]):
-    def create_transaction(
-        self,
-        db: Session,
-        user_id: int,
-        portfolio_id: int,
-        symbol: str,
-        type: str,
-        quantity: float,
-        price: float
-    ) -> Transaction:
-        """Create a new transaction"""
-        transaction = Transaction(
-            user_id=user_id,
-            portfolio_id=portfolio_id,
-            symbol=symbol,
-            type=type.upper(),
-            quantity=quantity,
-            price=price,
-            total=quantity * price
-        )
-        db.add(transaction)
-        db.commit()
-        db.refresh(transaction)
-        return transaction
-
-    def get_user_transactions(
-        self,
-        db: Session,
-        user_id: int,
-        symbol: Optional[str] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: int = 100
-    ) -> List[Transaction]:
-        """Get user's transaction history with optional filters"""
-        query = db.query(Transaction).filter(Transaction.user_id == user_id)
-
-        if symbol:
-            query = query.filter(Transaction.symbol == symbol)
-        if start_date:
-            query = query.filter(Transaction.timestamp >= start_date)
-        if end_date:
-            query = query.filter(Transaction.timestamp <= end_date)
-
-        return query.order_by(Transaction.timestamp.desc()).limit(limit).all()
-
-    def get_profit_summary(
-        self,
-        db: Session,
-        user_id: int,
-        timeframe: str = 'all'
-    ) -> Dict:
-        """Get profit summary for specified timeframe"""
-        query = db.query(
-            func.sum(Transaction.total).label('total_invested'),
-            func.count().label('total_trades')
-        ).filter(Transaction.user_id == user_id)
-
-        if timeframe != 'all':
-            now = datetime.utcnow()
-            if timeframe == 'daily':
-                start_date = now - timedelta(days=1)
-            elif timeframe == 'weekly':
-                start_date = now - timedelta(days=7)
-            elif timeframe == 'monthly':
-                start_date = now - timedelta(days=30)
-            query = query.filter(Transaction.timestamp >= start_date)
-
-        result = query.first()
-        return {
-            'total_invested': result.total_invested or 0,
-            'total_trades': result.total_trades or 0
-        }
-
-    def get_straddle_transactions(
-        self,
-        db: Session,
-        user_id: int,
-        symbol: Optional[str] = None
-    ) -> List[Transaction]:
-        """Get straddle transactions for a user"""
-        query = db.query(Transaction).filter(
-            Transaction.user_id == user_id,
-            Transaction.type.in_(['BUY', 'SELL'])
-        )
-
-        if symbol:
-            query = query.filter(Transaction.symbol == symbol)
-
-        return query.order_by(Transaction.timestamp.desc()).all()
 
 # Create instances
 portfolio_crud = CRUDPortfolio(Portfolio)
-transaction_crud = CRUDTransaction(Transaction)
+

@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     APP_DESCRIPTION: str = "API for automated crypto trading using time-based straddling strategy"
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = True
+    TESTING: bool = True
+    SWAP_FEE_PERCENTAGE: float = 0.001
 
     # Database settings
     POSTGRES_USER: str = "postgres"

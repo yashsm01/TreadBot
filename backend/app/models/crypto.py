@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean
 from sqlalchemy.sql import func
-from ..database import Base
+from app.core.database import Base
 
 class Cryptocurrency(Base):
     __tablename__ = "cryptocurrencies"

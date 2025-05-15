@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from .logger import logger
+from typing import AsyncGenerator
 
 # Create async engine
 engine = create_async_engine(
@@ -22,7 +23,7 @@ SessionLocal = sessionmaker(
 # Create Base class for declarative models
 Base = declarative_base()
 
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency to get database session"""
     async with SessionLocal() as session:
         try:

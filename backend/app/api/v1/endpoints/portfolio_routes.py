@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Dict, Optional
 from ....core.database import get_db
 from ....services.portfolio_service import portfolio_service
@@ -8,7 +9,7 @@ router = APIRouter()
 
 @router.get("/", response_model=Dict)
 async def get_portfolio_summary(
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Get portfolio summary"""
     try:
@@ -18,7 +19,7 @@ async def get_portfolio_summary(
 
 @router.get("/positions", response_model=List[Dict])
 async def get_positions(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     symbol: Optional[str] = None
 ):
     """Get all positions"""
@@ -30,7 +31,7 @@ async def get_positions(
 @router.get("/positions/{position_id}", response_model=Dict)
 async def get_position(
     position_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Get a specific position by ID"""
     try:
@@ -45,7 +46,7 @@ async def get_position(
 
 @router.get("/straddles", response_model=List[Dict])
 async def get_straddle_positions(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     symbol: Optional[str] = None
 ):
     """Get straddle positions"""

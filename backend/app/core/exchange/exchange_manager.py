@@ -2,6 +2,7 @@ import ccxt.async_support as ccxt
 import logging
 from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from ...services.crypto_service import crypto_service
 from ...core.config import settings
 from ...core.logger import logger
@@ -10,12 +11,12 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class ExchangeManager:
-    def __init__(self, db: Session = None, exchange_id: str = "binance"):
+    def __init__(self, db: AsyncSession = None, exchange_id: str = "binance"):
         """
         Initialize the exchange manager.
 
         Args:
-            db: SQLAlchemy database session
+            db: SQLAlchemy async database session
             exchange_id: Exchange identifier (default: "binance")
         """
         self.exchange_id = exchange_id
