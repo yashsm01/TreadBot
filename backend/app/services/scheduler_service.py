@@ -51,6 +51,9 @@ class StraddleMonitor:
             self.volume_history[symbol] = self.volume_history[symbol][-self.history_size:]
 
 class SchedulerService:
+    # Add class variable for processing locks
+    _processing_locks = {}
+
     def __init__(self, db: AsyncSession = Depends(get_db)):
         """Initialize the scheduler service"""
         self.db = db
@@ -109,20 +112,43 @@ class SchedulerService:
     # Time based schedules start
     async def _daily_schedule_start(self):
         """Start the daily schedule"""
+        # Check if this task is already running
+        lock_key = "daily_schedule"
+        if lock_key in SchedulerService._processing_locks and SchedulerService._processing_locks[lock_key]:
+            logger.debug("Daily schedule already running, skipping")
+            return
+
         try:
+            # Set the processing lock
+            SchedulerService._processing_locks[lock_key] = True
+
             #check if daily schedule is enabled
             if not self.daily_schedule_enabled:
                 logger.debug("Daily schedule disabled, skipping")
                 return
 
-            await self._send_daily_summary()
+            result = await self._send_daily_summary()
+            logger.info(f"Daily summary sent: {result}")
+            SchedulerService._processing_locks[lock_key] = False
         except Exception as e:
             logger.error(f"Error in daily schedule: {str(e)}")
             raise
+        finally:
+            # Release the processing lock
+            SchedulerService._processing_locks[lock_key] = False
 
     async def _hoverly_schedule_start(self):
         """Schedule the jobs"""
+        # Check if this task is already running
+        lock_key = "hoverly_schedule"
+        if lock_key in SchedulerService._processing_locks and SchedulerService._processing_locks[lock_key]:
+            logger.debug("Hourly schedule already running, skipping")
+            return
+
         try:
+            # Set the processing lock
+            SchedulerService._processing_locks[lock_key] = True
+
             #check if hoverly schedule is enabled
             if not self.hoverly_schedule_enabled:
                 logger.debug("Hoverly schedule disabled, skipping")
@@ -135,19 +161,36 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"Error in hoverly schedule: {str(e)}")
             raise
+        finally:
+            # Release the processing lock
+            SchedulerService._processing_locks[lock_key] = False
 
     async def _minute_schedule_start(self):
         """Start the minute schedule"""
+        # Check if this task is already running
+        lock_key = "minute_schedule"
+        if lock_key in SchedulerService._processing_locks and SchedulerService._processing_locks[lock_key]:
+            logger.debug("Minute schedule already running, skipping")
+            return
+
         try:
+            # Set the processing lock
+            SchedulerService._processing_locks[lock_key] = True
+
             #check if minute schedule is enabled
             if not self.minute_schedule_enabled:
                 logger.debug("Minute schedule disabled, skipping")
                 return
+
             straddle_service = StraddleService(self.db)
             await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
         except Exception as e:
             logger.error(f"Error in minute schedule: {str(e)}")
             raise
+        finally:
+            # Release the processing lock
+            SchedulerService._processing_locks[lock_key] = False
+
     # Time based schedules end
     async def _minute_schedule_stop(self):
         """Stop the minute schedule"""

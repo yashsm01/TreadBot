@@ -61,6 +61,8 @@ class StraddleStrategy:
 class StraddleService:
     # Make straddle_status a class variable so it's shared across all instances
     straddle_status = False
+    # Add processing lock flags
+    _processing_locks = {}
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -420,7 +422,16 @@ class StraddleService:
 
     async def auto_buy_sell_straddle_inprogress(self, symbol: str) -> List[Trade]:
         """Auto buy or sell straddle based on market conditions"""
+        # Check if this symbol is already being processed
+        lock_key = f"auto_trading_{symbol}"
+        if lock_key in StraddleService._processing_locks and StraddleService._processing_locks[lock_key]:
+            logger.info(f"Auto trading for {symbol} is already in progress, skipping")
+            return []
+
         try:
+            # Set the processing lock
+            StraddleService._processing_locks[lock_key] = True
+
             if not StraddleService.straddle_status:
                 logger.info(f"Straddle status is disabled, skipping auto buy/sell for {symbol}")
                 return []
@@ -609,6 +620,9 @@ class StraddleService:
         except Exception as e:
             logger.error(f"Error in auto_buy_sell_straddle_inprogress: {str(e)}")
             raise
+        finally:
+            # Release the processing lock
+            StraddleService._processing_locks[lock_key] = False
 
     async def change_straddle_status(self):
         # Use class name to access the class variable
