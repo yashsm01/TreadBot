@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from decimal import Decimal
 
 class TradeBase(BaseModel):
@@ -77,6 +77,49 @@ class Trade(TradeBase):
     exit_price: Optional[float] = None
     realized_pnl: Optional[float] = None
     unrealized_pnl: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            Decimal: lambda v: float(v)
+        }
+
+class TradingMetrics(BaseModel):
+    """Detailed trading metrics for a position"""
+    starting_price: float = 0
+    current_price: float = 0
+    position_size: float = 0
+    current_value: float = 0
+    profit_loss: float = 0
+    profit_loss_percent: float = 0
+    buy_profit_percent: Optional[float] = None
+    sell_profit_percent: Optional[float] = None
+    trend_direction: Optional[str] = None
+    trend_strength: Optional[int] = None
+    volatility: Optional[float] = None
+    profit_threshold: Optional[float] = None
+    recent_prices: Optional[List[float]] = None
+    buy_trades: List[Dict[str, Any]] = Field(default_factory=list)
+    sell_trades: List[Dict[str, Any]] = Field(default_factory=list)
+
+class SwapStatus(BaseModel):
+    """Information about coin swap operations"""
+    performed: bool = False
+    from_coin: str = ""
+    to_coin: str = ""
+    amount: float = 0
+    price: float = 0
+    timestamp: Optional[datetime] = None
+
+class TradingStatusResponse(BaseModel):
+    """Comprehensive trading status response"""
+    status: str
+    symbol: str
+    reason: Optional[str] = None
+    trades: List[Dict[str, Any]] = Field(default_factory=list)
+    metrics: TradingMetrics
+    swap_status: SwapStatus
 
     class Config:
         from_attributes = True

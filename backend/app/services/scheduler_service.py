@@ -16,6 +16,7 @@ from app.services.straddle_service import StraddleService
 from app.services.notifications import notification_service
 import asyncio
 import pandas as pd
+from app.services.telegram_service import TelegramService
 
 class StraddleMonitor:
     def __init__(self):
@@ -166,30 +167,165 @@ class SchedulerService:
             SchedulerService._processing_locks[lock_key] = False
 
     async def _minute_schedule_start(self):
-        """Start the minute schedule"""
-        # Check if this task is already running
+        """Execute minute-based schedule"""
         lock_key = "minute_schedule"
+
+        # Skip if already processing
         if lock_key in SchedulerService._processing_locks and SchedulerService._processing_locks[lock_key]:
-            logger.debug("Minute schedule already running, skipping")
+            logger.debug("Minute schedule already processing, skipping")
             return
 
-        try:
-            # Set the processing lock
-            SchedulerService._processing_locks[lock_key] = True
+        # Set processing lock
+        SchedulerService._processing_locks[lock_key] = True
 
+        try:
             #check if minute schedule is enabled
             if not self.minute_schedule_enabled:
                 logger.debug("Minute schedule disabled, skipping")
                 return
 
+            from app.services.notifications import notification_service
+            from app.services.telegram_service import TelegramService
+
+            # Ensure notification service has current DB session
+            if self.db and not notification_service.db:
+                notification_service.set_db(self.db)
+
+            # Get the telegram service singleton
+            telegram_service = TelegramService.get_instance(db=self.db)
+
+            # Ensure telegram service is initialized
+            if not telegram_service._initialized:
+                logger.warning("Telegram service not initialized, attempting to initialize in scheduler")
+                await telegram_service.initialize()
+
             straddle_service = StraddleService(self.db)
-            await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
+            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
+
+            # Use the enhanced notification service for better formatting
+            await notification_service.send_straddle_status_notification(trading_status)
+
+            return trading_status
         except Exception as e:
             logger.error(f"Error in minute schedule: {str(e)}")
             raise
         finally:
             # Release the processing lock
             SchedulerService._processing_locks[lock_key] = False
+
+    async def _send_trading_status_to_telegram(self, trading_status):
+        """Format and send trading status to Telegram"""
+        try:
+            if not trading_status:
+                return
+
+            symbol = trading_status.get('symbol', 'Unknown')
+            status = trading_status.get('status', 'Unknown')
+
+            # Skip sending certain statuses
+            if status in ["SKIPPED", "DISABLED", "NO_POSITION"]:
+                return
+
+            # Format header message based on status
+            if status == "MONITORING":
+                header = f"🔍 *Monitoring {symbol}*"
+            elif status == "PROFIT_TAKEN":
+                header = f"💰 *Profit Taken for {symbol}*"
+            elif status == "INITIATED":
+                header = f"🚀 *New Straddle Started for {symbol}*"
+            elif status == "RECREATED":
+                header = f"🔄 *Straddle Recreated for {symbol}*"
+            elif status == "ERROR":
+                header = f"⚠️ *Error in Straddle for {symbol}*"
+            else:
+                header = f"📊 *Status Update for {symbol}*"
+
+            # Get metrics
+            metrics = trading_status.get('metrics', {})
+            current_price = metrics.get('current_price', 0)
+            profit_loss = metrics.get('profit_loss', 0)
+            profit_loss_pct = metrics.get('profit_loss_percent', 0)
+
+            # Format price with proper precision
+            if current_price < 0.1:
+                price_format = "${:.6f}"
+            elif current_price < 1:
+                price_format = "${:.5f}"
+            elif current_price < 10:
+                price_format = "${:.4f}"
+            elif current_price < 1000:
+                price_format = "${:.2f}"
+            else:
+                price_format = "${:,.2f}"
+
+            # Format metrics message
+            metrics_msg = (
+                f"Current Price: {price_format.format(current_price)}\n"
+                f"P/L: ${profit_loss:.2f} ({profit_loss_pct:.2f}%)"
+            )
+
+            # Add trend information if available
+            if 'trend_direction' in metrics:
+                trend_direction = metrics['trend_direction']
+                trend_strength = metrics.get('trend_strength', 0)
+                trend_emoji = "📈" if trend_direction == "up" else "📉"
+                metrics_msg += f"\nTrend: {trend_emoji} {trend_direction.upper()} (Strength: {trend_strength})"
+
+            # Add volatility if available
+            if 'volatility' in metrics:
+                volatility = metrics['volatility'] * 100  # Convert to percentage
+                metrics_msg += f"\nVolatility: {volatility:.2f}%"
+
+            # Add trade information if needed
+            if status in ["INITIATED", "RECREATED"]:
+                buy_trades = metrics.get('buy_trades', [])
+                sell_trades = metrics.get('sell_trades', [])
+
+                if buy_trades:
+                    buy_price = buy_trades[0].get('entry_price', 0)
+                    metrics_msg += f"\nBuy Entry: {price_format.format(buy_price)}"
+
+                if sell_trades:
+                    sell_price = sell_trades[0].get('entry_price', 0)
+                    metrics_msg += f"\nSell Entry: {price_format.format(sell_price)}"
+
+            # Add swap information if a swap was performed
+            swap_info = ""
+            swap_status = trading_status.get('swap_status', {})
+            if swap_status.get('performed', False):
+                from_coin = swap_status.get('from_coin', '')
+                to_coin = swap_status.get('to_coin', '')
+                amount = swap_status.get('amount', 0)
+                price = swap_status.get('price', 0)
+
+                swap_info = (
+                    f"\n\n�� *Swap Performed*\n"
+                    f"From: {from_coin}\n"
+                    f"To: {to_coin}\n"
+                    f"Amount: {amount:.4f}\n"
+                    f"Price: {price_format.format(price)}"
+                )
+
+            # Add reason if available
+            reason = trading_status.get('reason', '')
+            reason_msg = f"\n\n_Reason: {reason}_" if reason else ""
+
+            # Handle error messages
+            error_msg = ""
+            if status == "ERROR":
+                error = trading_status.get('error', '')
+                if error:
+                    error_msg = f"\n\n❌ *Error*: {error}"
+
+            # Combine all parts into final message
+            message = f"{header}\n\n{metrics_msg}{swap_info}{reason_msg}{error_msg}"
+
+            # Send message to Telegram
+            await notification_service.send_message(message)
+
+        except Exception as e:
+            logger.error(f"Error sending trading status to Telegram: {str(e)}")
+            # Don't re-raise to prevent disrupting the main process
 
     # Time based schedules end
     async def _minute_schedule_stop(self):
@@ -225,7 +361,26 @@ class SchedulerService:
                 logger.debug("Auto trading disabled, skipping")
                 return
 
-            await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
+            from app.services.notifications import notification_service
+            # Ensure notification service has current DB session
+            if self.db and not notification_service.db:
+                notification_service.set_db(self.db)
+
+            # Get the telegram service singleton
+            telegram_service = TelegramService.get_instance(db=self.db)
+
+            # Ensure telegram service is initialized
+            if not telegram_service._initialized:
+                logger.warning("Telegram service not initialized, attempting to initialize in auto trading")
+                await telegram_service.initialize()
+
+            straddle_service = StraddleService(self.db)
+            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('GUN/USDT')
+
+            # Use the enhanced notification method
+            await notification_service.send_straddle_status_notification(trading_status)
+
+            return trading_status
         except Exception as e:
             logger.error(f"Error in auto trading process: {str(e)}")
             raise

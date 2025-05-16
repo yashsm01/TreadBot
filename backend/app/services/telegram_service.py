@@ -15,31 +15,51 @@ from ..core.config import settings
 from ..models.telegram import TelegramUser, TelegramNotification
 from ..crud.crud_telegram import telegram_user as user_crud
 from ..crud.crud_telegram import telegram_notification as notification_crud
-from ..services.market_analyzer import MarketAnalyzer
-from ..services.portfolio_service import PortfolioService
-from ..services.straddle_service import StraddleService
 from ..services.helper.binance_helper import BinanceHelper
 logger = logging.getLogger(__name__)
 
 class TelegramService:
+    # Singleton instance
+    _instance = None
+    # Class-level lock
+    _instance_running = False
+
+    @classmethod
+    def get_instance(cls, db=None, **kwargs):
+        """Get or create the singleton instance"""
+        if cls._instance is None:
+            logger.info("Creating new TelegramService instance (singleton)")
+            cls._instance = cls(db=db, **kwargs)
+        elif db is not None and cls._instance.db is None:
+            # Update DB if needed
+            logger.info("Updating database session in TelegramService singleton")
+            cls._instance.db = db
+        return cls._instance
+
     def __init__(
         self,
-        db: AsyncSession,
-        market_analyzer: MarketAnalyzer,
-        portfolio_service: PortfolioService,
-        straddle_service: StraddleService,
-        binance_helper: BinanceHelper
+        db: Optional[AsyncSession] = None,
+        market_analyzer=None,
+        portfolio_service=None,
+        straddle_service=None,
+        binance_helper=None
     ):
         """
         Initialize TelegramService with dependencies.
 
         Args:
             db (AsyncSession): SQLAlchemy async database session
-            market_analyzer (MarketAnalyzer): Service for market analysis
-            portfolio_service (PortfolioService): Service for portfolio management
-            straddle_service (StraddleService): Service for straddle positions
-            binance_helper (BinanceHelper): Helper for Binance API operations
+            market_analyzer: Service for market analysis
+            portfolio_service: Service for portfolio management
+            straddle_service: Service for straddle positions
+            binance_helper: Helper for Binance API operations
         """
+        # Skip initialization if instance already exists (singleton pattern)
+        if TelegramService._instance is not None and self is not TelegramService._instance:
+            logger.warning("Attempting to create another TelegramService instance - skipping")
+            return
+
+        # Regular initialization for the first/singleton instance
         self.db = db
         self.market_analyzer = market_analyzer
         self.portfolio_service = portfolio_service
@@ -77,7 +97,15 @@ class TelegramService:
             logger.info("Telegram service already initialized")
             return True
 
+        # Check if any instance is already running across the application
+        if TelegramService._instance_running:
+            logger.warning("Another Telegram service instance is already running")
+            return False
+
         try:
+            # Mark that we're starting an instance
+            TelegramService._instance_running = True
+
             # Create semaphore for concurrency control
             import asyncio
             self._semaphore = asyncio.Semaphore(1)
@@ -85,6 +113,7 @@ class TelegramService:
             if not settings.TELEGRAM_BOT_TOKEN:
                 logger.warning("No Telegram bot token provided. Telegram functionality will be disabled.")
                 self._initialized = False
+                TelegramService._instance_running = False
                 return False
 
             logger.info("Initializing Telegram bot...")
@@ -137,6 +166,8 @@ class TelegramService:
         except Exception as e:
             logger.error(f"Failed to initialize Telegram bot: {str(e)}")
             self._initialized = False
+            # Release the instance_running lock
+            TelegramService._instance_running = False
             # Don't raise the exception, just continue without Telegram functionality
             return False
 
@@ -148,6 +179,45 @@ class TelegramService:
             await self.application.stop()
             logger.info("Telegram bot stopped")
             self._initialized = False
+            # Release the instance running lock
+            TelegramService._instance_running = False
+
+    async def send_message(self, message: str):
+        """
+        Send a message to all active users.
+
+        Args:
+            message (str): The message to send (supports Markdown formatting)
+        """
+        if not self._initialized:
+            logger.warning("Telegram service not initialized, cannot send message")
+            return False
+
+        try:
+            # Get all active users from the database
+            users = await user_crud.get_active_users(self.db)
+            if not users or len(users) == 0:
+                logger.warning("No active users to send message to")
+                return False
+
+            success_count = 0
+            # Send message to each active user
+            for user in users:
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=user.chat_id,
+                        text=message,
+                        parse_mode='Markdown'
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to send message to user {user.id}: {str(e)}")
+
+            logger.info(f"Message sent to {success_count}/{len(users)} active users")
+            return success_count > 0
+        except Exception as e:
+            logger.error(f"Error broadcasting message: {str(e)}")
+            return False
 
     async def send_notification(
         self,
@@ -907,7 +977,7 @@ Example usage:
 
 def create_telegram_service(db: AsyncSession) -> TelegramService:
     """
-    Create a new instance of TelegramService with all required dependencies.
+    Create or get the singleton instance of TelegramService with all required dependencies.
 
     Args:
         db (AsyncSession): SQLAlchemy async database session
@@ -916,31 +986,30 @@ def create_telegram_service(db: AsyncSession) -> TelegramService:
         TelegramService: Configured but not initialized service instance
     """
     try:
-        logger.info("Creating TelegramService instance...")
-        market_analyzer = MarketAnalyzer()
-        portfolio_service = PortfolioService(db)
-        straddle_service = StraddleService(db)
-        binance_helper = BinanceHelper()
+        logger.info("Getting TelegramService singleton instance...")
+        # Import services here to avoid circular imports
+        from ..services.market_analyzer import MarketAnalyzer
+        from ..services.portfolio_service import portfolio_service
+        from ..services.straddle_service import straddle_service
+        from ..services.helper.binance_helper import binance_helper
 
-        service = TelegramService(
+        market_analyzer = MarketAnalyzer()
+
+        # Get or create the singleton instance
+        service = TelegramService.get_instance(
             db=db,
             market_analyzer=market_analyzer,
             portfolio_service=portfolio_service,
             straddle_service=straddle_service,
             binance_helper=binance_helper
         )
-        logger.info("TelegramService instance created successfully")
+
+        logger.info("TelegramService singleton instance ready")
         return service
     except Exception as e:
         logger.error(f"Error creating TelegramService: {str(e)}")
-        # Return a minimal service that will not crash the application
-        return TelegramService(
-            db=db,
-            market_analyzer=MarketAnalyzer(),
-            portfolio_service=PortfolioService(db),
-            straddle_service=StraddleService(db),
-            binance_helper=BinanceHelper()
-        )
+        # Return the singleton instance even if there was an error setting up dependencies
+        return TelegramService.get_instance(db=db)
 
-# Initialize as None, will be created properly in main.py
-telegram_service = None
+# Create the singleton instance
+telegram_service = TelegramService.get_instance()

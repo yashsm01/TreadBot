@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.services.straddle_service import StraddleService, BreakoutSignal
 from app.models.trade import Trade
-from app.schemas.trade import TradeCreate, TradeResponse
+from app.schemas.trade import TradeCreate, TradeResponse, TradingStatusResponse
 from pydantic import BaseModel, Field, validator
 import pandas as pd
 
@@ -276,22 +276,54 @@ async def change_straddle_status(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/auto-buy-sell-straddle-inprogress", response_model=List[TradeResponse])
+@router.post("/auto-buy-sell-straddle-inprogress", response_model=TradingStatusResponse)
 async def auto_buy_sell_straddle_inprogress(
     params: CloserRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Auto buy or sell straddle based on market conditions"""
+    Auto buy or sell straddle based on market conditions
+
+    Returns:
+        Comprehensive trading status including position metrics, trade information, market trends, and swap details
+    """
     try:
         straddle_service = StraddleService(db)
-        trades = await straddle_service.auto_buy_sell_straddle_inprogress(params.symbol)
-        return trades
+        trading_status = await straddle_service.auto_buy_sell_straddle_inprogress(params.symbol)
+        return trading_status
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to close straddle positions: {str(e)}"
+            detail=f"Failed to process straddle positions: {str(e)}"
+        )
+
+@router.get("/trading-status-example/{symbol}", response_model=TradingStatusResponse)
+async def get_trading_status_example(
+    symbol: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get example of comprehensive trading status information for a symbol
+
+    This is a test endpoint to demonstrate the structure of the TradingStatusResponse
+
+    Args:
+        symbol: Trading pair symbol (e.g. BTC/USDT)
+
+    Returns:
+        Comprehensive trading status including metrics, trend analysis, and trade information
+    """
+    try:
+        straddle_service = StraddleService(db)
+        trading_status = await straddle_service.auto_buy_sell_straddle_inprogress(symbol)
+        return trading_status
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get trading status: {str(e)}"
         )
 

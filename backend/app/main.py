@@ -69,14 +69,28 @@ async def startup_event():
             portfolio_service.db = db
 
             if(telegram_srv):
-                # Create and initialize telegram service
-                logger.info("Creating telegram service...")
+                # Access and initialize the telegram service singleton
+                logger.info("Initializing Telegram service...")
+                from app.services.telegram_service import TelegramService
                 global telegram_service
-                telegram_service = create_telegram_service(db)
+                # Get the singleton instance and update its DB session
+                telegram_service = TelegramService.get_instance(db=db)
 
                 # Initialize Telegram bot
                 logger.info("Initializing Telegram bot...")
                 await telegram_service.initialize()
+
+                # Initialize notification service AFTER telegram service is initialized
+                from app.services.notifications import notification_service
+                notification_service.set_db(db)
+                # Force initialization of the telegram service in notification service
+                await notification_service._get_telegram_service()
+                logger.info("Notification service initialized with database session and Telegram service")
+            else:
+                # Initialize notification service without Telegram
+                from app.services.notifications import notification_service
+                notification_service.set_db(db)
+                logger.info("Notification service initialized with database session (Telegram disabled)")
 
             if(scheduler_srv):
                 # Start scheduler
