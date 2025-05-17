@@ -70,6 +70,28 @@ class CRUDPortfolio(CRUDBase[Portfolio, PortfolioCreate, PortfolioUpdate]):
         await db.refresh(portfolio)
         return portfolio
 
+    # Override the create method to ensure proper datetime handling
+    async def create(self, db: AsyncSession, *, obj_in: PortfolioCreate) -> Portfolio:
+        """Create a new portfolio with proper datetime handling"""
+        # Convert any string dates to proper datetime objects
+        if isinstance(obj_in.last_updated, str):
+            obj_in.last_updated = datetime.fromisoformat(obj_in.last_updated.replace('Z', '+00:00'))
+
+        # Create dict of values for SQLAlchemy model
+        db_obj = Portfolio(
+            symbol=obj_in.symbol,
+            quantity=obj_in.quantity,
+            avg_buy_price=obj_in.avg_buy_price,
+            asset_type=obj_in.asset_type,
+            user_id=obj_in.user_id,
+            last_updated=obj_in.last_updated
+        )
+
+        db.add(db_obj)
+        await db.commit()
+        await db.refresh(db_obj)
+        return db_obj
+
 
 # Create instances
 portfolio_crud = CRUDPortfolio(Portfolio)

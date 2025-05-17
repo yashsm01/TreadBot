@@ -10,3 +10,13 @@ celery -A crypto_scheduler.app beat --loglevel=info
 uvicorn app.main:app --reload
 
 
+alembic current
+alembic history
+alembic revision --autogenerate -m "Description of your changes"
+alembic upgrade head
+alembic upgrade <revision_id>
+alembic downgrade <revision_id>
+alembic merge heads -m "merge_branches"
+alembic stamp <revision_id>
+alembic upgrade head --sql > migration.sql
+

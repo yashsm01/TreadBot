@@ -6,7 +6,8 @@ from app.api.v1.endpoints import (
     telegram_routes,
     crypto_routes,
     straddle_routes,
-    swap_transaction_routes
+    swap_transaction_routes,
+    portfolio_summary_routes
 )
 
 api_router = APIRouter()
@@ -55,4 +56,11 @@ api_router.include_router(
     swap_transaction_routes.router,
     prefix="/swap-transactions",
     tags=["swap-transactions"]
+)
+
+# Include portfolio summary endpoints
+api_router.include_router(
+    portfolio_summary_routes.router,
+    prefix="/portfolio-summary",
+    tags=["portfolio-summary"]
 )

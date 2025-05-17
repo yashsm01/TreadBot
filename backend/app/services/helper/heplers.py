@@ -1,7 +1,11 @@
 import pytz
 from datetime import datetime
+import uuid
 
 class Helpers:
+  def generate_transaction_id(self) -> str:
+    return str(uuid.uuid4())
+
   def convert_to_indian_standard_time(self, dt: datetime) -> datetime:
     return dt.astimezone(pytz.timezone('Asia/Kolkata'))
 

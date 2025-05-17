@@ -177,6 +177,10 @@ class NotificationService:
                 swap = trading_status.get('swap_status', {})
                 swap_performed = swap.get('performed', False)
 
+                # Get portfolio summary if available
+                portfolio_summary = trading_status.get('portfolio_summary', {})
+                has_portfolio_summary = len(portfolio_summary) > 0
+
                 # Add appropriate emoji based on status
                 status_emoji = "✅" if status in ["INITIATED", "RECREATED"] else "⚠️" if status in ["SKIPPED", "DISABLED"] else "❌" if status == "CLOSED" else "💤" if status == "IDLE" else "❓"
 
@@ -195,6 +199,29 @@ class NotificationService:
                 # Add reason if present
                 if trading_status.get('reason'):
                     message += f"*Reason:* {trading_status['reason']}\n"
+
+                # Add portfolio summary info if available
+                if has_portfolio_summary and status not in ["ERROR"]:
+                    message += (
+                        f"\n*Portfolio Summary:*\n"
+                        f"Total Value: ${portfolio_summary.get('total_value', 0):,.2f}\n"
+                        f"P/L: {pnl_emoji} ${portfolio_summary.get('total_profit_loss', 0):,.2f} "
+                        f"({portfolio_summary.get('total_profit_loss_percentage', 0):+.2f}%)\n"
+                    )
+
+                    # Add daily change if available
+                    if portfolio_summary.get('daily_change') is not None:
+                        daily_emoji = "📈" if portfolio_summary['daily_change'] > 0 else "📉"
+                        message += f"Daily Change: {daily_emoji} {portfolio_summary['daily_change']:+.2f}%\n"
+
+                    # Add asset distribution
+                    crypto_value = portfolio_summary.get('crypto_value', 0)
+                    stable_value = portfolio_summary.get('stable_value', 0)
+                    total = crypto_value + stable_value
+                    if total > 0:
+                        crypto_pct = (crypto_value / total) * 100
+                        stable_pct = (stable_value / total) * 100
+                        message += f"Crypto: {crypto_pct:.1f}% | Stable: {stable_pct:.1f}%\n"
 
                 # Add position metrics if we have a valid position
                 if current_price > 0 and status not in ["NO_POSITION"]:
@@ -226,18 +253,66 @@ class NotificationService:
                             f"Price: ${swap.get('price', 0):,.2f}\n"
                         )
 
-                # Send the message
-                result = await self.send_message(message)
-                if result:
-                    logger.info(f"Successfully sent straddle status notification for {symbol}")
-                    return True
-                else:
+                # Use a fresh database session for sending the message to avoid transaction issues
+                try:
+                    # Send message with a direct call to avoid reusing potentially bad transactions
+                    if telegram_service and telegram_service.application and telegram_service.application.bot:
+                        # Get active users directly with a clean transaction
+                        from app.crud.crud_telegram import telegram_user
+                        from sqlalchemy.ext.asyncio import AsyncSession
+
+                        async with AsyncSession(self.db.bind) as clean_session:
+                            active_users = await telegram_user.get_active_users(clean_session)
+
+                            if not active_users:
+                                logger.warning(f"No active users to send message to")
+                                return False
+
+                            success_count = 0
+                            for user in active_users:
+                                try:
+                                    await telegram_service.application.bot.send_message(
+                                        chat_id=user.chat_id,
+                                        text=message,
+                                        parse_mode='Markdown'
+                                    )
+                                    success_count += 1
+                                except Exception as msg_error:
+                                    logger.error(f"Failed to send message to user {user.id}: {str(msg_error)}")
+
+                            if success_count > 0:
+                                logger.info(f"Straddle status notification sent to {success_count}/{len(active_users)} users")
+                                return True
+                            else:
+                                logger.warning(f"Failed to send notification to any users")
+                                if retries < max_retries - 1:
+                                    retries += 1
+                                    await asyncio.sleep(2)  # Wait before retry
+                                    continue
+                                else:
+                                    return False
+                    else:
+                        # Fallback to regular send_message if direct approach not available
+                        result = await telegram_service.send_message(message)
+                        if result:
+                            logger.info(f"Successfully sent straddle status notification for {symbol}")
+                            return True
+                        else:
+                            if retries < max_retries - 1:
+                                retries += 1
+                                logger.warning(f"Failed to send notification (attempt {retries}/{max_retries}), retrying...")
+                                await asyncio.sleep(2)  # Wait before retry
+                            else:
+                                logger.error(f"Failed to send straddle status notification after {max_retries} attempts")
+                                return False
+                except Exception as tx_error:
+                    logger.error(f"Transaction error in notification: {str(tx_error)}")
                     if retries < max_retries - 1:
                         retries += 1
-                        logger.warning(f"Failed to send notification (attempt {retries}/{max_retries}), retrying...")
+                        logger.warning(f"Transaction error (attempt {retries}/{max_retries}), retrying...")
                         await asyncio.sleep(2)  # Wait before retry
                     else:
-                        logger.error(f"Failed to send straddle status notification after {max_retries} attempts")
+                        logger.error(f"Failed to send notification after {max_retries} attempts due to transaction errors")
                         return False
             except Exception as e:
                 logger.error(f"Error sending straddle status notification: {str(e)}")

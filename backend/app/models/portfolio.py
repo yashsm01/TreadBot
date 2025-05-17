@@ -12,6 +12,7 @@ class Portfolio(Base):
     quantity = Column(Float, default=0)
     avg_buy_price = Column(Float, nullable=False)
     last_updated = Column(DateTime, default=datetime.utcnow)
+    asset_type = Column(String, nullable=True)
 
     # Relationships
     transactions = relationship("Transaction", back_populates="portfolio")

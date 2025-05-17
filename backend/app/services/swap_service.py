@@ -10,6 +10,8 @@ from app.services.helper.heplers import helpers
 from app.services.helper.binance_helper import binance_helper
 from app.schemas.portfolio import PortfolioCreate, PortfolioUpdate
 from app.schemas.swap_transaction import SwapTransactionCreate
+from app.models.portfolio import Portfolio  # Add import for direct database model usage
+from app.models.swap_transaction import SwapTransaction  # Add import for swap transaction model
 
 
 class SwapService:
@@ -61,7 +63,7 @@ class SwapService:
 
             # Update portfolio: remove the original crypto
             # First check if we have this crypto in portfolio
-            existing_crypto = await portfolio_crud.get_by_symbol(self.db, symbol=symbol)
+            existing_crypto = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
 
             if existing_crypto:
                 # Update existing entry - reduce quantity
@@ -72,9 +74,10 @@ class SwapService:
                     }
 
                     if update_data["quantity"] <= 0:
-                        # Remove from portfolio if quantity is zero
-                        await portfolio_crud.remove(self.db, id=existing_crypto.id)
-                        logger.info(f"Removed {symbol} from portfolio as balance is now zero")
+                        # Keep in portfolio but set quantity to exactly 0
+                        update_data["quantity"] = 0
+                        await portfolio_crud.update(self.db, db_obj=existing_crypto, obj_in=update_data)
+                        logger.info(f"Updated {symbol} portfolio quantity to 0 (keeping record)")
                     else:
                         # Update with new quantity
                         await portfolio_crud.update(self.db, db_obj=existing_crypto, obj_in=update_data)
@@ -91,7 +94,7 @@ class SwapService:
                 }
 
             # Add or update stablecoin in portfolio
-            existing_stable = await portfolio_crud.get_by_symbol(self.db, symbol=stable_coin)
+            existing_stable = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=stable_coin)
 
             if existing_stable:
                 # Update existing stablecoin entry
@@ -102,20 +105,51 @@ class SwapService:
                 await portfolio_crud.update(self.db, db_obj=existing_stable, obj_in=update_data)
                 logger.info(f"Updated {stable_coin} portfolio: new quantity = {update_data['quantity']}")
             else:
-                # Create new stablecoin entry
-                new_stable = PortfolioCreate(
+                # Create new stablecoin entry directly using updated CRUD method
+                # Create directly with database model to avoid serialization issues
+                # Create a database model instance directly
+                new_stable_db = Portfolio(
                     symbol=stable_coin,
                     quantity=stable_amount,
-                    entry_price=1.0,  # Stablecoins are pegged to 1.0
+                    avg_buy_price=1.0,  # Stablecoins are pegged to 1.0
+                    last_updated=datetime.utcnow(),  # Fresh datetime
                     asset_type="STABLE",
-                    last_updated=transaction_time
+                    user_id=1
                 )
-                await portfolio_crud.create(self.db, obj_in=new_stable)
+
+                # Add, commit and refresh directly
+                self.db.add(new_stable_db)
+                await self.db.commit()
+                await self.db.refresh(new_stable_db)
+
                 logger.info(f"Added {stable_coin} to portfolio with quantity {stable_amount}")
 
-            # Record the transaction details
+            # Generate a transaction ID
+            transaction_id = helpers.generate_transaction_id()
+
+            # Create a database model instance directly to avoid any serialization issues
+            swap_transaction_db = SwapTransaction(
+                transaction_id=transaction_id,
+                from_symbol=symbol,
+                to_symbol=stable_coin,
+                from_amount=quantity,
+                to_amount=stable_amount,
+                rate=current_price,
+                fee_percentage=fee_percentage,
+                fee_amount=fee_amount,
+                timestamp=datetime.utcnow(),  # Use a fresh datetime
+                status="completed",
+                user_id=1  # Default user_id
+            )
+
+            # Add, commit and refresh directly
+            self.db.add(swap_transaction_db)
+            await self.db.commit()
+            await self.db.refresh(swap_transaction_db)
+
+            # Create transaction details for logging
             transaction_details = {
-                "transaction_id": helpers.generate_transaction_id(),
+                "transaction_id": transaction_id,
                 "from_symbol": symbol,
                 "to_symbol": stable_coin,
                 "from_amount": quantity,
@@ -123,25 +157,9 @@ class SwapService:
                 "rate": current_price,
                 "fee_percentage": fee_percentage,
                 "fee_amount": fee_amount,
-                "timestamp": transaction_time.isoformat(),
                 "status": "completed"
             }
 
-            # Store the transaction in the swap_transactions table
-            swap_transaction = SwapTransactionCreate(
-                transaction_id=transaction_details["transaction_id"],
-                from_symbol=transaction_details["from_symbol"],
-                to_symbol=transaction_details["to_symbol"],
-                from_amount=transaction_details["from_amount"],
-                to_amount=transaction_details["to_amount"],
-                rate=transaction_details["rate"],
-                fee_percentage=transaction_details["fee_percentage"],
-                fee_amount=transaction_details["fee_amount"],
-                timestamp=transaction_time,
-                status=transaction_details["status"],
-                user_id=1  # Default user_id, could be passed as a parameter
-            )
-            await swap_transaction_crud.create(self.db, obj_in=swap_transaction)
             logger.info(f"Swap transaction stored in database: {transaction_details}")
 
             return {
@@ -195,7 +213,7 @@ class SwapService:
                 return {"status": "failed", "message": "Swap is not allowed in this mode"}
 
             # Update portfolio: reduce stablecoin amount
-            existing_stable = await portfolio_crud.get_by_symbol(self.db, symbol=stable_coin)
+            existing_stable = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=stable_coin)
 
             if existing_stable:
                 # Update existing entry - reduce stablecoin quantity
@@ -206,9 +224,10 @@ class SwapService:
                     }
 
                     if update_data["quantity"] <= 0:
-                        # Remove from portfolio if quantity is zero
-                        await portfolio_crud.remove(self.db, id=existing_stable.id)
-                        logger.info(f"Removed {stable_coin} from portfolio as balance is now zero")
+                        # Keep in portfolio but set quantity to exactly 0
+                        update_data["quantity"] = 0
+                        await portfolio_crud.update(self.db, db_obj=existing_stable, obj_in=update_data)
+                        logger.info(f"Updated {stable_coin} portfolio quantity to 0 (keeping record)")
                     else:
                         # Update with new quantity
                         await portfolio_crud.update(self.db, db_obj=existing_stable, obj_in=update_data)
@@ -225,11 +244,11 @@ class SwapService:
                 }
 
             # Add or update cryptocurrency in portfolio
-            existing_crypto = await portfolio_crud.get_by_symbol(self.db, symbol=symbol)
+            existing_crypto = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
 
             if existing_crypto:
                 # Calculate new average entry price
-                total_value_before = existing_crypto.quantity * existing_crypto.entry_price
+                total_value_before = existing_crypto.quantity * existing_crypto.avg_buy_price
                 new_value = amount - fee_amount
                 total_quantity = existing_crypto.quantity + crypto_amount
                 new_avg_price = (total_value_before + new_value) / total_quantity
@@ -237,26 +256,59 @@ class SwapService:
                 # Update existing cryptocurrency entry
                 update_data = {
                     "quantity": total_quantity,
-                    "entry_price": new_avg_price,
+                    "avg_buy_price": new_avg_price,
                     "last_updated": transaction_time
                 }
                 await portfolio_crud.update(self.db, db_obj=existing_crypto, obj_in=update_data)
                 logger.info(f"Updated {symbol} portfolio: new quantity = {total_quantity}, new avg price = {new_avg_price}")
             else:
-                # Create new cryptocurrency entry
-                new_crypto = PortfolioCreate(
+                # Create new cryptocurrency entry directly using the database model
+                # Create directly with database model to avoid serialization issues
+                # Using Portfolio model imported earlier
+
+                # Create a database model instance directly
+                new_crypto_db = Portfolio(
                     symbol=symbol,
                     quantity=crypto_amount,
-                    entry_price=current_price,
+                    avg_buy_price=current_price,
+                    last_updated=datetime.utcnow(),  # Fresh datetime
                     asset_type="CRYPTO",
-                    last_updated=transaction_time
+                    user_id=1
                 )
-                await portfolio_crud.create(self.db, obj_in=new_crypto)
+
+                # Add, commit and refresh directly
+                self.db.add(new_crypto_db)
+                await self.db.commit()
+                await self.db.refresh(new_crypto_db)
+
                 logger.info(f"Added {symbol} to portfolio with quantity {crypto_amount}")
 
-            # Record the transaction details
+            # Generate a transaction ID
+            transaction_id = helpers.generate_transaction_id()
+
+            # Create a database model instance directly to avoid any serialization issues
+            swap_transaction_db = SwapTransaction(
+                transaction_id=transaction_id,
+                from_symbol=stable_coin,
+                to_symbol=symbol,
+                from_amount=amount,
+                to_amount=crypto_amount,
+                rate=current_price,
+                fee_percentage=fee_percentage,
+                fee_amount=fee_amount,
+                timestamp=datetime.utcnow(),  # Use a fresh datetime
+                status="completed",
+                user_id=1  # Default user_id
+            )
+
+            # Add, commit and refresh directly
+            self.db.add(swap_transaction_db)
+            await self.db.commit()
+            await self.db.refresh(swap_transaction_db)
+
+            # Create transaction details for logging
             transaction_details = {
-                "transaction_id": helpers.generate_transaction_id(),
+                "transaction_id": transaction_id,
                 "from_symbol": stable_coin,
                 "to_symbol": symbol,
                 "from_amount": amount,
@@ -264,25 +316,9 @@ class SwapService:
                 "rate": current_price,
                 "fee_percentage": fee_percentage,
                 "fee_amount": fee_amount,
-                "timestamp": transaction_time.isoformat(),
                 "status": "completed"
             }
 
-            # Store the transaction in the swap_transactions table
-            swap_transaction = SwapTransactionCreate(
-                transaction_id=transaction_details["transaction_id"],
-                from_symbol=transaction_details["from_symbol"],
-                to_symbol=transaction_details["to_symbol"],
-                from_amount=transaction_details["from_amount"],
-                to_amount=transaction_details["to_amount"],
-                rate=transaction_details["rate"],
-                fee_percentage=transaction_details["fee_percentage"],
-                fee_amount=transaction_details["fee_amount"],
-                timestamp=transaction_time,
-                status=transaction_details["status"],
-                user_id=1  # Default user_id, could be passed as a parameter
-            )
-            await swap_transaction_crud.create(self.db, obj_in=swap_transaction)
             logger.info(f"Swap transaction stored in database: {transaction_details}")
 
             return {

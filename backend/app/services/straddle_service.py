@@ -10,6 +10,7 @@ from app.crud.crud_trade import trade as trade_crud
 from app.crud.curd_position import position_crud
 from app.schemas.position import PositionCreate, PositionUpdate, Position
 from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
+from app.crud.crud_user_portfolio_summary import user_portfolio_summary_crud
 #services
 from app.services.helper.heplers import helpers
 from app.services.helper.binance_helper import binance_helper
@@ -420,6 +421,173 @@ class StraddleService:
             logger.error(f"Error closing straddle position for {symbol}: {str(e)}")
             raise
 
+    async def update_portfolio_summary(self, symbol: str) -> Dict:
+        """
+        Update the portfolio summary after each straddle operation
+        This collects data about all assets and stores a snapshot in the user_portfolio_summary table
+        """
+        try:
+            logger.info(f"Updating portfolio summary for symbol {symbol}")
+
+            # Create a new database transaction for portfolio summary operations
+            # to isolate it from any potential issues with the previous transaction
+            async with AsyncSession(self.db.bind) as isolated_session:
+                try:
+                    # Get all portfolio assets
+                    portfolio_items = await portfolio_crud.get_multi(isolated_session)
+
+                    # Calculate portfolio totals
+                    total_value = 0.0
+                    total_cost_basis = 0.0
+                    crypto_value = 0.0
+                    stable_value = 0.0
+
+                    # Prepare assets dict for JSON storage
+                    assets_data = {}
+
+                    # Process each asset in portfolio
+                    for item in portfolio_items:
+                        try:
+                            # Get current price
+                            price_data = await binance_helper.get_price(item.symbol)
+                            current_price = price_data["price"]
+
+                            # Calculate value
+                            asset_value = item.quantity * current_price
+                            asset_cost = item.quantity * item.entry_price
+
+                            # Add to totals
+                            total_value += asset_value
+                            total_cost_basis += asset_cost
+
+                            # Categorize as crypto or stable
+                            if item.asset_type == "STABLE":
+                                stable_value += asset_value
+                            else:
+                                crypto_value += asset_value
+
+                            # Add to assets data
+                            assets_data[item.symbol] = {
+                                "symbol": item.symbol,
+                                "quantity": item.quantity,
+                                "entry_price": item.entry_price,
+                                "current_price": current_price,
+                                "value": asset_value,
+                                "cost_basis": asset_cost,
+                                "profit_loss": asset_value - asset_cost,
+                                "profit_loss_percentage": ((asset_value - asset_cost) / asset_cost * 100) if asset_cost > 0 else 0,
+                                "asset_type": item.asset_type
+                            }
+                        except Exception as asset_error:
+                            logger.error(f"Error processing asset {item.symbol}: {str(asset_error)}")
+                            continue
+
+                    # Calculate total profit/loss
+                    total_profit_loss = total_value - total_cost_basis
+
+                    # Get recent trade count
+                    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                    trades_today_result = await trade_crud.get_trades_count_since(isolated_session, since=today_start)
+                    trades_today = trades_today_result if trades_today_result else 0
+
+                    # Get recent swap count
+                    try:
+                        from app.crud.crud_swap_transaction import swap_transaction_crud
+                        swaps_today_result = await swap_transaction_crud.get_swaps_count_since(isolated_session, since=today_start)
+                        swaps_today = swaps_today_result if swaps_today_result else 0
+                    except Exception as swap_error:
+                        logger.error(f"Error counting swaps: {str(swap_error)}")
+                        swaps_today = 0
+
+                    # Get market trend information
+                    market_trend = None
+                    market_volatility = None
+
+                    try:
+                        market_data = await market_analyzer.get_price_data(symbol, interval="5m", limit=10)
+                        if market_data is not None:
+                            recent_prices = market_data['close'].tolist()
+                            price_changes = [recent_prices[i] - recent_prices[i-1] for i in range(1, len(recent_prices))]
+                            market_trend = "up" if sum(price_changes) > 0 else "down"
+                            market_volatility = (max(recent_prices) - min(recent_prices)) / min(recent_prices) if min(recent_prices) > 0 else 0
+                    except Exception as market_error:
+                        logger.error(f"Error getting market trend: {str(market_error)}")
+
+                    # Get default user ID (use first active user if available)
+                    user_id = None
+                    try:
+                        active_users = await telegram_user.get_active_users(isolated_session)
+                        if active_users and len(active_users) > 0:
+                            user_id = active_users[0].id
+                    except Exception as user_error:
+                        logger.error(f"Error getting active user: {str(user_error)}")
+                        # Continue with user_id as None
+
+                    # Determine if portfolio is hedged
+                    is_hedged = False
+                    stable_ratio = 0
+                    if crypto_value > 0 and stable_value > 0:
+                        stable_ratio = stable_value / (crypto_value + stable_value)
+                        is_hedged = stable_ratio >= 0.2  # Consider hedged if at least 20% in stablecoins
+
+                    # Calculate risk level (1-5)
+                    risk_level = 3  # Default moderate risk
+                    if is_hedged:
+                        risk_level = 2  # Lower risk if hedged
+                    if market_volatility and market_volatility > 0.03:
+                        risk_level += 1  # Higher risk in volatile market
+                    if stable_ratio > 0.5:
+                        risk_level = 1  # Very low risk if majority in stablecoins
+
+                    # Create portfolio summary record
+                    summary = await user_portfolio_summary_crud.create_summary(
+                        db=isolated_session,
+                        user_id=user_id,
+                        total_value=total_value,
+                        total_cost_basis=total_cost_basis,
+                        total_profit_loss=total_profit_loss,
+                        assets=assets_data,
+                        crypto_value=crypto_value,
+                        stable_value=stable_value,
+                        market_trend=market_trend,
+                        market_volatility=market_volatility,
+                        trades_today=trades_today,
+                        swaps_today=swaps_today
+                    )
+
+                    logger.info(f"Successfully updated portfolio summary. Total value: ${total_value:.2f}, P/L: ${total_profit_loss:.2f}")
+
+                    # Return summary for reference
+                    return {
+                        "id": summary.id,
+                        "timestamp": summary.timestamp.isoformat(),
+                        "total_value": summary.total_value,
+                        "total_profit_loss": summary.total_profit_loss,
+                        "total_profit_loss_percentage": summary.total_profit_loss_percentage,
+                        "crypto_value": summary.crypto_value,
+                        "stable_value": summary.stable_value,
+                        "daily_change": summary.daily_change,
+                        "weekly_change": summary.weekly_change,
+                        "monthly_change": summary.monthly_change,
+                        "trades_today": summary.trades_today,
+                        "swaps_today": summary.swaps_today,
+                        "market_trend": summary.market_trend,
+                        "risk_level": summary.risk_level
+                    }
+
+                except Exception as inner_e:
+                    logger.error(f"Error in isolated portfolio summary transaction: {str(inner_e)}")
+                    await isolated_session.rollback()
+                    raise
+
+        except Exception as e:
+            logger.error(f"Error updating portfolio summary: {str(e)}")
+            # Return a minimal response on error to prevent cascading failures
+            return {
+                "status": "error",
+                "message": f"Failed to update portfolio summary: {str(e)}"
+            }
+
     async def auto_buy_sell_straddle_inprogress(self, symbol: str) -> Dict:
         """Auto buy or sell straddle based on market conditions"""
         # Check if this symbol is already being processed
@@ -725,7 +893,7 @@ class StraddleService:
                     stable_coin = stable_coin_data["best_stable"]
 
                     # Check if we have this stablecoin in portfolio
-                    stable_portfolio = await portfolio_crud.get_by_symbol(self.db, symbol=stable_coin)
+                    stable_portfolio = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=stable_coin)
 
                     if stable_portfolio and stable_portfolio.quantity > 0:
                         # Calculate amount to swap back - be conservative
@@ -767,7 +935,19 @@ class StraddleService:
             # Update response
             response["status"] = "MONITORING"
             response["trades"] = [self._trade_to_dict(trade) for trade in trades]
-            return response  # Return current trades
+
+            # At the end of the function, before returning and after all operations are complete,
+            # update the portfolio summary
+            try:
+                portfolio_summary = await self.update_portfolio_summary(symbol)
+                # Add portfolio summary to response
+                response["portfolio_summary"] = portfolio_summary
+            except Exception as summary_error:
+                logger.error(f"Error updating portfolio summary: {str(summary_error)}")
+                # Don't fail the entire operation if portfolio summary update fails
+
+            return response
+
         except Exception as e:
             logger.error(f"Error in auto_buy_sell_straddle_inprogress: {str(e)}")
             # Update response with error information

@@ -14,6 +14,9 @@ class TelegramUser(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_interaction = Column(DateTime, default=datetime.utcnow)
 
+    # Add relationship to portfolio summaries
+    portfolio_summaries = relationship("UserPortfolioSummary", back_populates="user")
+
 class TelegramNotification(Base):
     __tablename__ = "telegram_notifications"
 
