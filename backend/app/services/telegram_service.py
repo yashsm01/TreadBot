@@ -15,7 +15,14 @@ from ..core.config import settings
 from ..models.telegram import TelegramUser, TelegramNotification
 from ..crud.crud_telegram import telegram_user as user_crud
 from ..crud.crud_telegram import telegram_notification as notification_crud
-from ..services.helper.binance_helper import BinanceHelper
+
+
+  # Import services here to avoid circular imports
+from app.services.market_analyzer import market_analyzer
+from app.services.portfolio_service import portfolio_service
+from app.services.straddle_service import straddle_service
+from app.services.helper.binance_helper import binance_helper
+
 logger = logging.getLogger(__name__)
 
 class TelegramService:
@@ -39,10 +46,10 @@ class TelegramService:
     def __init__(
         self,
         db: Optional[AsyncSession] = None,
-        market_analyzer=None,
-        portfolio_service=None,
-        straddle_service=None,
-        binance_helper=None
+        market_analyzer=market_analyzer,
+        portfolio_service=portfolio_service,
+        straddle_service=straddle_service,
+        binance_helper=binance_helper
     ):
         """
         Initialize TelegramService with dependencies.
@@ -527,7 +534,7 @@ Example usage:
             if len(context.args) == 3:
                 price = float(context.args[2])
             else:
-                market_data = await self.market_analyzer.get_market_analysis(symbol)
+                market_data = await self.binance_helper.get_price(symbol)
                 price = market_data['price']
 
             # Check trade viability
@@ -987,13 +994,8 @@ def create_telegram_service(db: AsyncSession) -> TelegramService:
     """
     try:
         logger.info("Getting TelegramService singleton instance...")
-        # Import services here to avoid circular imports
-        from ..services.market_analyzer import MarketAnalyzer
-        from ..services.portfolio_service import portfolio_service
-        from ..services.straddle_service import straddle_service
-        from ..services.helper.binance_helper import binance_helper
 
-        market_analyzer = MarketAnalyzer()
+
 
         # Get or create the singleton instance
         service = TelegramService.get_instance(
