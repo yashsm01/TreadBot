@@ -22,6 +22,7 @@ from app.services.market_analyzer import market_analyzer
 from app.services.portfolio_service import portfolio_service
 from app.services.straddle_service import straddle_service
 from app.services.helper.binance_helper import binance_helper
+from app.services.swap_service import swap_service
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,11 @@ class TelegramService:
             self.application.add_handler(CommandHandler("update_straddle", self.handle_update_straddle))
             self.application.add_handler(CommandHandler("close_straddle", self.handle_close_straddle))
             self.application.add_handler(CommandHandler("straddles", self.get_straddle_positions))
+
+            # Swap transaction commands
+            self.application.add_handler(CommandHandler("swap_crypto", self.handle_swap_crypto_to_stable))
+            self.application.add_handler(CommandHandler("swap_stable", self.handle_swap_stable_to_crypto))
+            self.application.add_handler(CommandHandler("swap_history", self.get_swap_history))
 
             # Testing commands
             self.application.add_handler(CommandHandler("price", self.get_price))
@@ -500,6 +506,11 @@ Straddle Strategy:
 /close_straddle ID - Close straddle position
 /straddles - View straddle positions
 
+Swap Commands:
+/swap_crypto SYMBOL AMOUNT - Swap crypto to stablecoin
+/swap_stable STABLE CRYPTO AMOUNT - Swap stablecoin to crypto
+/swap_history [LIMIT] - View swap history
+
 Testing Commands:
 /price SYMBOL - Get price of a symbol
 /prices SYMBOL1 SYMBOL2 SYMBOL3 - Get prices of multiple symbols
@@ -511,6 +522,8 @@ Example usage:
 /buy BTC/USDT 0.1 50000
 /sell BTC/USDT 0.1
 /straddle ETHUSDT 1
+/swap_crypto BTC 0.01
+/swap_stable USDT BTC 100
 """
         await update.message.reply_text(help_msg)
 
@@ -981,6 +994,188 @@ Example usage:
                     pass
 
         return wrapper
+
+    async def handle_swap_crypto_to_stable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /swap_crypto command to swap cryptocurrency to stablecoin
+        Usage: /swap_crypto SYMBOL AMOUNT
+        Example: /swap_crypto BTC 0.01
+        """
+        try:
+            if len(context.args) != 2:
+                await update.message.reply_text("❌ Usage: /swap_crypto SYMBOL AMOUNT\nExample: /swap_crypto BTC 0.01")
+                return
+
+            symbol = context.args[0].upper()
+            try:
+                amount = float(context.args[1])
+            except ValueError:
+                await update.message.reply_text("❌ Amount must be a valid number")
+                return
+
+            # Check if amount is positive
+            if amount <= 0:
+                await update.message.reply_text("❌ Amount must be positive")
+                return
+
+            # Get current price of the symbol
+            await update.message.reply_text(f"🔍 Getting price for {symbol}...")
+            price_data = await self.binance_helper.get_price(symbol)
+            current_price = price_data['price']
+
+            # Get user from database
+            user = await user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            if not user:
+                await update.message.reply_text("❌ Please start the bot first with /start")
+                return
+
+            # Execute swap
+            await update.message.reply_text(f"💱 Swapping {amount} {symbol} to stablecoin...")
+
+            # Ensure swap_service has DB session
+            swap_service.db = self.db
+
+            result = await swap_service.swap_symbol_stable_coin(
+                symbol=symbol,
+                quantity=amount,
+                current_price=current_price
+            )
+
+            if result["status"] == "success":
+                # Format success message
+                transaction = result["transaction"]
+                swap_msg = (
+                    f"✅ *Swap Completed*\n\n"
+                    f"From: {transaction['from_amount']} {transaction['from_symbol']}\n"
+                    f"To: {transaction['to_amount']:,.2f} {transaction['to_symbol']}\n"
+                    f"Rate: ${transaction['rate']:,.2f}\n"
+                    f"Fee: ${transaction['fee_amount']:,.2f} ({transaction['fee_percentage']}%)\n"
+                    f"Transaction ID: {transaction['transaction_id']}"
+                )
+                await update.message.reply_text(swap_msg, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"❌ Swap failed: {result['message']}")
+
+        except Exception as e:
+            logger.error(f"Error handling swap_crypto command: {str(e)}")
+            await update.message.reply_text(f"❌ Failed to execute swap: {str(e)}")
+
+    async def handle_swap_stable_to_crypto(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /swap_stable command to swap stablecoin to cryptocurrency
+        Usage: /swap_stable STABLE CRYPTO AMOUNT
+        Example: /swap_stable USDT BTC 100
+        """
+        try:
+            if len(context.args) != 3:
+                await update.message.reply_text("❌ Usage: /swap_stable STABLE CRYPTO AMOUNT\nExample: /swap_stable USDT BTC 100")
+                return
+
+            stable_coin = context.args[0].upper()
+            symbol = context.args[1].upper()
+            try:
+                amount = float(context.args[2])
+            except ValueError:
+                await update.message.reply_text("❌ Amount must be a valid number")
+                return
+
+            # Check if amount is positive
+            if amount <= 0:
+                await update.message.reply_text("❌ Amount must be positive")
+                return
+
+            # Get user from database
+            user = await user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            if not user:
+                await update.message.reply_text("❌ Please start the bot first with /start")
+                return
+
+            # Execute swap
+            await update.message.reply_text(f"💱 Swapping {amount} {stable_coin} to {symbol}...")
+
+            # Ensure swap_service has DB session
+            swap_service.db = self.db
+
+            result = await swap_service.swap_stable_coin_symbol(
+                stable_coin=stable_coin,
+                symbol=symbol,
+                amount=amount
+            )
+
+            if result["status"] == "success":
+                # Format success message
+                transaction = result["transaction"]
+                swap_msg = (
+                    f"✅ *Swap Completed*\n\n"
+                    f"From: {transaction['from_amount']} {transaction['from_symbol']}\n"
+                    f"To: {transaction['to_amount']:,.8f} {transaction['to_symbol']}\n"
+                    f"Rate: ${transaction['rate']:,.2f}\n"
+                    f"Fee: ${transaction['fee_amount']:,.2f} ({transaction['fee_percentage']}%)\n"
+                    f"Transaction ID: {transaction['transaction_id']}"
+                )
+                await update.message.reply_text(swap_msg, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"❌ Swap failed: {result['message']}")
+
+        except Exception as e:
+            logger.error(f"Error handling swap_stable command: {str(e)}")
+            await update.message.reply_text(f"❌ Failed to execute swap: {str(e)}")
+
+    async def get_swap_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /swap_history command
+        Usage: /swap_history [LIMIT]
+        Example: /swap_history 5
+        """
+        try:
+            limit = 5  # Default limit
+
+            if context.args and len(context.args) == 1:
+                try:
+                    limit = int(context.args[0])
+                    if limit < 1:
+                        limit = 1
+                    elif limit > 10:
+                        limit = 10
+                except ValueError:
+                    await update.message.reply_text("❌ Limit must be a valid number")
+                    return
+
+            # Get user from database
+            user = await user_crud.get_by_telegram_id(self.db, telegram_id=update.effective_user.id)
+            if not user:
+                await update.message.reply_text("❌ Please start the bot first with /start")
+                return
+
+            # Fetch swap history from database
+            from app.crud.crud_swap_transaction import swap_transaction_crud
+            transactions = await swap_transaction_crud.get_multi(
+                self.db,
+                skip=0,
+                limit=limit,
+                filters={"user_id": user.id}
+            )
+
+            if not transactions:
+                await update.message.reply_text("📊 No swap history found.")
+                return
+
+            # Format history message
+            history_msg = "📊 *Swap Transaction History*\n\n"
+
+            for tx in transactions:
+                timestamp = tx.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                history_msg += (
+                    f"ID: {tx.transaction_id}\n"
+                    f"{tx.from_amount} {tx.from_symbol} → {tx.to_amount:,.8f} {tx.to_symbol}\n"
+                    f"Rate: ${tx.rate:,.2f}\n"
+                    f"Fee: ${tx.fee_amount:,.2f} ({tx.fee_percentage}%)\n"
+                    f"Date: {timestamp}\n"
+                    f"Status: {tx.status.upper()}\n\n"
+                )
+
+            await update.message.reply_text(history_msg, parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"Error handling swap_history command: {str(e)}")
+            await update.message.reply_text(f"❌ Failed to get swap history: {str(e)}")
 
 def create_telegram_service(db: AsyncSession) -> TelegramService:
     """
