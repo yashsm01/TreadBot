@@ -6,6 +6,7 @@ from app.core.logger import logger
 from datetime import datetime
 import numpy as np
 from app.core.config import settings
+import time
 
 class BinanceHelper:
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None):
@@ -25,10 +26,13 @@ class BinanceHelper:
             Dictionary containing price information
         """
         try:
+            if self.is_stablecoin(symbol):
+                return {"symbol": symbol, "price": 1.0, "time": int(time.time() * 1000)}
             # Convert symbol format if needed (BTC/USDT -> BTCUSDT)
             formatted_symbol = symbol.replace("/", "")
             ticker = self.client.get_symbol_ticker(symbol=formatted_symbol)
             current_time = int(datetime.utcnow().timestamp() * 1000)  # Convert to milliseconds
+
 
             return {
                 "symbol": symbol,
@@ -308,6 +312,20 @@ class BinanceHelper:
         """Convert millisecond timestamp to readable format"""
         dt = datetime.fromtimestamp(timestamp_ms / 1000)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Helper function to check if a symbol is a stablecoin
+    def is_stablecoin(self, symbol: str) -> bool:
+        """
+        Check if a symbol is a stablecoin
+        Args:
+            symbol: Symbol to check
+        Returns:
+            True if the symbol is a stablecoin, False otherwise
+        """
+        common_stablecoins = ["USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "USDD"]
+        if symbol in common_stablecoins:
+            return True
+        return False
 
 # Create singleton instance
 binance_helper = BinanceHelper()

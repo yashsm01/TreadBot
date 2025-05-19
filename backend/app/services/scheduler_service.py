@@ -5,14 +5,14 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends
-from app.core.database import get_db
+from fastapi import Depends, BackgroundTasks
+from app.core.database import get_db, SessionLocal
 from app.core.logger import logger
 from app.services.market_analyzer import MarketAnalyzer
 from app.services.portfolio_service import portfolio_service
 from app.core.config import settings
 from app.services.crypto_service import crypto_service
-from app.services.straddle_service import StraddleService
+from app.services.straddle_service import StraddleService, straddle_service
 from app.services.notifications import notification_service
 import asyncio
 import pandas as pd
@@ -60,6 +60,8 @@ class SchedulerService:
         self.db = db
         self.scheduler = AsyncIOScheduler()
         self.straddle_monitor = StraddleMonitor()
+        self.is_running = False
+        self.symbols = []
 
         # Schedule jobs
         self.minute_schedule_enabled = True
@@ -513,25 +515,91 @@ class SchedulerService:
         self.risk_check_enabled = enabled
         logger.info(f"Risk check {'enabled' if enabled else 'disabled'}")
 
-    async def start(self):
-        """Start the scheduler"""
-        try:
-            if not self.scheduler.running:
-                self.scheduler.start()
-                logger.info("Scheduler started successfully")
-        except Exception as e:
-            logger.error(f"Error starting scheduler: {str(e)}")
-            raise
+    async def start(self, symbols=None):
+        """Start the scheduler with the given symbols"""
+        if self.is_running:
+            logger.info("Scheduler is already running")
+            return
+
+        if symbols:
+            self.symbols = symbols
+        elif not self.symbols:
+            # Default to BTC if no symbols provided
+            self.symbols = ["BTCUSDT"]
+
+        logger.info(f"Starting portfolio summary scheduler for symbols: {self.symbols}")
+
+        # Schedule portfolio summaries at different intervals
+        self.scheduler.add_job(
+            self.generate_portfolio_summary,
+            IntervalTrigger(minutes=1),
+            id="portfolio_summary_1min",
+            replace_existing=True,
+            args=[self.symbols[0]]  # Use the first symbol for summaries
+        )
+
+        # Add jobs for different lookback windows (just log different intervals, actual summary creation is the same)
+        self.scheduler.add_job(
+            self.log_summary_interval,
+            IntervalTrigger(minutes=5),
+            id="portfolio_summary_5min",
+            replace_existing=True,
+            args=["5-minute"]
+        )
+
+        self.scheduler.add_job(
+            self.log_summary_interval,
+            IntervalTrigger(minutes=15),
+            id="portfolio_summary_15min",
+            replace_existing=True,
+            args=["15-minute"]
+        )
+
+        self.scheduler.add_job(
+            self.log_summary_interval,
+            IntervalTrigger(minutes=60),
+            id="portfolio_summary_60min",
+            replace_existing=True,
+            args=["1-hour"]
+        )
+
+        # Start the scheduler
+        self.scheduler.start()
+        self.is_running = True
+        logger.info("Portfolio summary scheduler started successfully")
 
     async def stop(self):
         """Stop the scheduler"""
+        if not self.is_running:
+            logger.info("Scheduler is not running")
+            return
+
+        self.scheduler.shutdown()
+        self.is_running = False
+        logger.info("Portfolio summary scheduler stopped")
+
+    async def generate_portfolio_summary(self, symbol):
+        """Generate a portfolio summary snapshot"""
         try:
-            if self.scheduler.running:
-                self.scheduler.shutdown()
-                logger.info("Scheduler stopped successfully")
+            # Create a new db session for this task
+            async with SessionLocal() as db:
+                # Initialize straddle service with the session
+                straddle_svc = straddle_service
+                straddle_svc.db = db
+
+                # Update portfolio summary
+                logger.info(f"Generating portfolio summary for {symbol}")
+                summary = await straddle_svc.update_portfolio_summary(symbol)
+
+                # Log success
+                logger.info(f"Successfully created portfolio summary. Total value: ${summary.get('total_value', 0):.2f}")
+
         except Exception as e:
-            logger.error(f"Error stopping scheduler: {str(e)}")
-            raise
+            logger.error(f"Error generating portfolio summary: {str(e)}")
+
+    async def log_summary_interval(self, interval):
+        """Just log that this interval has been triggered"""
+        logger.info(f"Portfolio summary {interval} interval triggered")
 
     async def start_monitoring(self):
         """Start the monitoring service"""
@@ -553,5 +621,11 @@ class SchedulerService:
         logger.info("Stopping straddle monitoring service")
 
 
-
+# Create scheduler instance
 scheduler_service = SchedulerService(None)  # Will be initialized with proper db session
+
+# Function to start scheduler at application startup
+async def start_scheduler_on_startup():
+    # Get symbols from settings (if available)
+    symbols = getattr(settings, "TRADING_SYMBOLS", ["BTCUSDT"])
+    await scheduler_service.start(symbols)

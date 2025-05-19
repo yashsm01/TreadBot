@@ -449,12 +449,18 @@ class StraddleService:
                     for item in portfolio_items:
                         try:
                             # Get current price
-                            price_data = await binance_helper.get_price(item.symbol)
-                            current_price = price_data["price"]
+                            # Check if the asset is a stablecoin
+                            if item.asset_type == "STABLE":
+                                # For stablecoins, use 1.0 as the price since they're pegged to $1
+                                current_price = 1.0
+                            else:
+                                # For other assets, fetch price from Binance
+                                price_data = await binance_helper.get_price(item.symbol)
+                                current_price = price_data["price"]
 
                             # Calculate value
                             asset_value = item.quantity * current_price
-                            asset_cost = item.quantity * item.entry_price
+                            asset_cost = item.quantity * item.avg_buy_price
 
                             # Add to totals
                             total_value += asset_value
@@ -470,7 +476,7 @@ class StraddleService:
                             assets_data[item.symbol] = {
                                 "symbol": item.symbol,
                                 "quantity": item.quantity,
-                                "entry_price": item.entry_price,
+                                "avg_buy_price": item.avg_buy_price,
                                 "current_price": current_price,
                                 "value": asset_value,
                                 "cost_basis": asset_cost,
@@ -539,41 +545,51 @@ class StraddleService:
                     if stable_ratio > 0.5:
                         risk_level = 1  # Very low risk if majority in stablecoins
 
-                    # Create portfolio summary record
-                    summary = await user_portfolio_summary_crud.create_summary(
-                        db=isolated_session,
-                        user_id=user_id,
-                        total_value=total_value,
-                        total_cost_basis=total_cost_basis,
-                        total_profit_loss=total_profit_loss,
-                        assets=assets_data,
-                        crypto_value=crypto_value,
-                        stable_value=stable_value,
-                        market_trend=market_trend,
-                        market_volatility=market_volatility,
-                        trades_today=trades_today,
-                        swaps_today=swaps_today
-                    )
+                    try:
+                        # Create portfolio summary record
+                        summary = await user_portfolio_summary_crud.create_summary(
+                            db=isolated_session,
+                            user_id=user_id,
+                            total_value=total_value,
+                            total_cost_basis=total_cost_basis,
+                            total_profit_loss=total_profit_loss,
+                            assets=assets_data,
+                            crypto_value=crypto_value,
+                            stable_value=stable_value,
+                            market_trend=market_trend,
+                            market_volatility=market_volatility,
+                            trades_today=trades_today,
+                            swaps_today=swaps_today
+                        )
 
-                    logger.info(f"Successfully updated portfolio summary. Total value: ${total_value:.2f}, P/L: ${total_profit_loss:.2f}")
+                        logger.info(f"Successfully updated portfolio summary. Total value: ${total_value:.2f}, P/L: ${total_profit_loss:.2f}")
 
-                    # Return summary for reference
-                    return {
-                        "id": summary.id,
-                        "timestamp": summary.timestamp.isoformat(),
-                        "total_value": summary.total_value,
-                        "total_profit_loss": summary.total_profit_loss,
-                        "total_profit_loss_percentage": summary.total_profit_loss_percentage,
-                        "crypto_value": summary.crypto_value,
-                        "stable_value": summary.stable_value,
-                        "daily_change": summary.daily_change,
-                        "weekly_change": summary.weekly_change,
-                        "monthly_change": summary.monthly_change,
-                        "trades_today": summary.trades_today,
-                        "swaps_today": summary.swaps_today,
-                        "market_trend": summary.market_trend,
-                        "risk_level": summary.risk_level
-                    }
+                        # Return summary for reference
+                        return {
+                            "id": summary.id,
+                            "timestamp": summary.timestamp.isoformat(),
+                            "total_value": summary.total_value,
+                            "total_profit_loss": summary.total_profit_loss,
+                            "total_profit_loss_percentage": summary.total_profit_loss_percentage,
+                            "crypto_value": summary.crypto_value,
+                            "stable_value": summary.stable_value,
+                            "daily_change": summary.daily_change,
+                            "weekly_change": summary.weekly_change,
+                            "monthly_change": summary.monthly_change,
+                            "trades_today": summary.trades_today,
+                            "swaps_today": summary.swaps_today,
+                            "market_trend": summary.market_trend,
+                            "risk_level": summary.risk_level
+                        }
+                    except Exception as summary_error:
+                        logger.error(f"Error creating portfolio summary: {str(summary_error)}")
+                        # Return a simplified response when the summary table doesn't exist
+                        return {
+                            "status": "table_error",
+                            "message": "Portfolio summary table doesn't exist - run migrations",
+                            "total_value": total_value,
+                            "total_profit_loss": total_profit_loss
+                        }
 
                 except Exception as inner_e:
                     logger.error(f"Error in isolated portfolio summary transaction: {str(inner_e)}")

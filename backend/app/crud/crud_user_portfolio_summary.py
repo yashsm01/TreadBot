@@ -159,16 +159,34 @@ class CRUDUserPortfolioSummary(CRUDBase[UserPortfolioSummary, Dict[str, Any], Di
         *,
         user_id: Optional[int] = None,
         days: int = 7,
-        interval: str = "daily"  # daily, hourly
+        interval: str = "daily"  # daily, hourly, last_hour, minutes_15, minutes_5, minutes_1
     ) -> List[UserPortfolioSummary]:
         """
         Get historical portfolio summaries for charting/analysis
+
+        Intervals:
+        - daily: one record per day for the past 'days' days
+        - hourly: all records for the past 'days' days
+        - last_hour: all records from the last hour
+        - minutes_15: all records from the last 15 minutes
+        - minutes_5: all records from the last 5 minutes
+        - minutes_1: all records from the last minute
         """
         try:
-            start_date = datetime.utcnow() - timedelta(days=days)
+            # For predefined short intervals, override the days parameter
+            if interval == "last_hour":
+                start_date = datetime.utcnow() - timedelta(hours=1)
+            elif interval == "minutes_15":
+                start_date = datetime.utcnow() - timedelta(minutes=15)
+            elif interval == "minutes_5":
+                start_date = datetime.utcnow() - timedelta(minutes=5)
+            elif interval == "minutes_1":
+                start_date = datetime.utcnow() - timedelta(minutes=1)
+            else:
+                start_date = datetime.utcnow() - timedelta(days=days)
 
-            if interval == "hourly":
-                # For hourly data, get all records within the time range
+            # For all time-based intervals except daily, return all records in the time range
+            if interval in ["hourly", "last_hour", "minutes_15", "minutes_5", "minutes_1"]:
                 query = select(UserPortfolioSummary)\
                     .filter(UserPortfolioSummary.timestamp >= start_date)\
                     .order_by(UserPortfolioSummary.timestamp)
@@ -207,6 +225,123 @@ class CRUDUserPortfolioSummary(CRUDBase[UserPortfolioSummary, Dict[str, Any], Di
         except Exception as e:
             logger.error(f"Error getting historical portfolio summaries: {str(e)}")
             raise
+
+    async def get_time_period_summary(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: Optional[int] = None,
+        time_period: str = "hour"  # hour, minutes_15, minutes_5, minutes_1
+    ) -> Dict[str, Any]:
+        """
+        Get a summary of portfolio performance for a specific time period
+        Returns start, end, and change metrics
+        """
+        try:
+            # Determine time period
+            now = datetime.utcnow()
+            if time_period == "hour":
+                start_time = now - timedelta(hours=1)
+            elif time_period == "minutes_15":
+                start_time = now - timedelta(minutes=15)
+            elif time_period == "minutes_5":
+                start_time = now - timedelta(minutes=5)
+            elif time_period == "minutes_1":
+                start_time = now - timedelta(minutes=1)
+            else:
+                start_time = now - timedelta(hours=1)  # Default to 1 hour
+
+            # Get the earliest record in the time period
+            earliest_query = select(UserPortfolioSummary)\
+                .filter(UserPortfolioSummary.timestamp >= start_time)
+
+            if user_id:
+                earliest_query = earliest_query.filter(UserPortfolioSummary.user_id == user_id)
+
+            earliest_query = earliest_query.order_by(UserPortfolioSummary.timestamp.asc()).limit(1)
+            earliest_result = await db.execute(earliest_query)
+            start_summary = earliest_result.scalars().first()
+
+            # Get the latest record
+            latest_query = select(UserPortfolioSummary)
+
+            if user_id:
+                latest_query = latest_query.filter(UserPortfolioSummary.user_id == user_id)
+
+            latest_query = latest_query.order_by(desc(UserPortfolioSummary.timestamp)).limit(1)
+            latest_result = await db.execute(latest_query)
+            end_summary = latest_result.scalars().first()
+
+            # If we didn't find records, return empty data
+            if not start_summary or not end_summary:
+                return {
+                    "time_period": time_period,
+                    "has_data": False,
+                    "message": "No data available for the specified time period"
+                }
+
+            # Calculate changes
+            value_change = end_summary.total_value - start_summary.total_value
+            value_change_pct = (value_change / start_summary.total_value * 100) if start_summary.total_value > 0 else 0
+
+            profit_change = end_summary.total_profit_loss - start_summary.total_profit_loss
+
+            # Get all summaries in the time period for detailed analysis
+            all_query = select(UserPortfolioSummary)\
+                .filter(UserPortfolioSummary.timestamp >= start_time)
+
+            if user_id:
+                all_query = all_query.filter(UserPortfolioSummary.user_id == user_id)
+
+            all_query = all_query.order_by(UserPortfolioSummary.timestamp.asc())
+            all_result = await db.execute(all_query)
+            all_summaries = all_result.scalars().all()
+
+            # If we have enough data points, calculate volatility
+            volatility = None
+            if len(all_summaries) >= 3:
+                values = [s.total_value for s in all_summaries]
+                # Simple volatility calculation: standard deviation of returns
+                try:
+                    import numpy as np
+                    if len(values) > 1:
+                        returns = [(values[i] - values[i-1])/values[i-1] for i in range(1, len(values))]
+                        volatility = float(np.std(returns) * 100) if returns else None
+                except ImportError:
+                    # Fall back to basic calculation if numpy is not available
+                    if len(values) > 1:
+                        returns = [(values[i] - values[i-1])/values[i-1] for i in range(1, len(values))]
+                        if returns:
+                            # Manual standard deviation calculation
+                            mean = sum(returns) / len(returns)
+                            variance = sum((r - mean) ** 2 for r in returns) / len(returns)
+                            volatility = (variance ** 0.5) * 100
+
+            return {
+                "time_period": time_period,
+                "has_data": True,
+                "start_time": start_summary.timestamp.isoformat(),
+                "end_time": end_summary.timestamp.isoformat(),
+                "start_value": start_summary.total_value,
+                "end_value": end_summary.total_value,
+                "value_change": value_change,
+                "value_change_percent": value_change_pct,
+                "start_profit": start_summary.total_profit_loss,
+                "end_profit": end_summary.total_profit_loss,
+                "profit_change": profit_change,
+                "data_points": len(all_summaries),
+                "volatility": volatility,
+                "start_market_trend": start_summary.market_trend,
+                "end_market_trend": end_summary.market_trend
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting time period summary: {str(e)}")
+            return {
+                "time_period": time_period,
+                "has_data": False,
+                "error": str(e)
+            }
 
 
 # Create instance

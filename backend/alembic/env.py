@@ -12,6 +12,9 @@ from app.models.trade import Trade
 from app.models.crypto import Cryptocurrency, CryptoPair
 from app.models.telegram import TelegramUser, TelegramNotification
 from app.models.swap_transaction import SwapTransaction
+from app.models.transaction import Transaction
+from app.models.position import Position
+from app.models.user_portfolio_summary import UserPortfolioSummary
 from app.core.database import Base
 
 # this is the Alembic Config object, which provides

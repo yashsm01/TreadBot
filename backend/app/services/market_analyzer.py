@@ -134,6 +134,25 @@ class MarketAnalyzer:
         try:
             from ..services.helper.binance_helper import binance_helper
 
+            # Check if this is a stablecoin symbol - skip API call and return synthetic data
+            if binance_helper.is_stablecoin(symbol):
+                # Create a synthetic dataframe with stable price (1.0) for requested limit
+                current_timestamp = int(datetime.now().timestamp() * 1000)
+                timestamps = [current_timestamp - (i * 5 * 60 * 1000) for i in range(limit)]  # 5-minute intervals
+
+                # Create dataframe with constant price data
+                data = {
+                    'timestamp': timestamps,
+                    'open': [1.0] * limit,
+                    'high': [1.001] * limit,  # Slight variation
+                    'low': [0.999] * limit,   # Slight variation
+                    'close': [1.0] * limit,
+                    'volume': [1000000] * limit  # Dummy volume
+                }
+                df = pd.DataFrame(data)
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                return df
+
             # Use binance_helper.get_5m_price_history for 5-minute interval data
             if interval == "5m":
                 # Calculate intervals based on limit
