@@ -532,7 +532,7 @@ class StraddleService:
                     # Determine if portfolio is hedged
                     is_hedged = False
                     stable_ratio = 0
-                    if crypto_value > 0 and stable_value > 0:
+                    if (crypto_value + stable_value) > 0:  # Prevent division by zero
                         stable_ratio = stable_value / (crypto_value + stable_value)
                         is_hedged = stable_ratio >= 0.2  # Consider hedged if at least 20% in stablecoins
 
