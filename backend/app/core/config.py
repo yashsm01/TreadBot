@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     DEFAULT_BREAKOUT_PCT: float = 0.5
     DEFAULT_QUANTITY: float = 0.001
 
+    # 5m_LIMIT
+    TREADING_DEFAULT_LIMIT: int = 100
+    TREADING_DEFAULT_INTERVAL: str = "1m"
+
     # Telegram Settings
     TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "7816751552:AAEdH_pquW9QFyr_OghH3RxkDqtOTBT3LsQ")
     TELEGRAM_CHAT_ID: Optional[str] = os.getenv("TELEGRAM_CHAT_ID", "505504650")

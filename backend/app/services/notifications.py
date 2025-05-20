@@ -228,9 +228,11 @@ class NotificationService:
                     # Price and position info
                     message += (
                         f"\n*Position Details:*\n"
-                        f"Current Price: ${current_price:,.2f}\n"
-                        f"Entry Price: ${starting_price:,.2f}\n"
-                        f"Size: {position_size:,.6f}\n"
+                        f"Size: {position_size:,.8f}\n"
+                        f"Entry Price: ${starting_price:,.8f}\n"
+                        f"Total Entry Price: ${starting_price * position_size:,.8f}\n"
+                        f"Current Price: ${current_price:,.8f}\n"
+                        f"Total Price: ${current_price * position_size:,.8f}\n"
                         f"PnL: {pnl_emoji} ${profit_loss:,.2f} ({profit_loss_percent:+.2f}%)\n"
                     )
 

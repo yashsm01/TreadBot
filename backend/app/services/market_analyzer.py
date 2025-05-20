@@ -127,8 +127,8 @@ class MarketAnalyzer:
     async def get_price_data(
         self,
         symbol: str,
-        interval: str = "5m",
-        limit: int = 100
+        interval: str = settings.TREADING_DEFAULT_INTERVAL,
+        limit: int = settings.TREADING_DEFAULT_LIMIT
     ) -> pd.DataFrame:
         """Get historical price data"""
         try:
@@ -160,6 +160,27 @@ class MarketAnalyzer:
 
                 # Get price history from binance helper
                 price_history = await binance_helper.get_5m_price_history(symbol, intervals=intervals)
+
+                if not price_history or not price_history.get('data') or not price_history['data'].get('history'):
+                    raise Exception(f"Could not get price history data for {symbol}")
+
+                # Convert to DataFrame
+                history_data = price_history['data']['history']
+                df = pd.DataFrame(history_data)
+
+                # Rename columns to match OHLCV format
+                df = df.rename(columns={'timestamp': 'timestamp'})
+
+                # Convert timestamp to datetime
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+                return df
+            elif interval == "15m":
+                # Calculate intervals based on limit
+                intervals = min(50, max(5, limit))  # Cap between 5 and 50 intervals
+
+                # Get price history from binance helper
+                price_history = await binance_helper.get_dynamic_price_history(symbol, interval="15m", intervals=intervals)
 
                 if not price_history or not price_history.get('data') or not price_history['data'].get('history'):
                     raise Exception(f"Could not get price history data for {symbol}")

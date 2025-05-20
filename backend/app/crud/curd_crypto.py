@@ -204,6 +204,8 @@ async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: i
         exists = await table_exists(db, table_name)
         if not exists:
             logger.error(f"Table {table_name} does not exist, cannot insert data")
+            success = await create_crypto_table(db, symbol, month, year)
+            logger.info(f"Created table and indexes for: {table_name}")
             return False
 
         # Validate required data fields

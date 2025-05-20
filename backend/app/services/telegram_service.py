@@ -608,7 +608,7 @@ Example usage:
             if len(context.args) == 3:
                 price = float(context.args[2])
             else:
-                market_data = await self.market_analyzer.get_market_analysis(symbol)
+                market_data = await self.binance_helper.get_price(symbol)
                 price = market_data['price']
 
             # Check trade viability

@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 import pandas as pd
+import numpy as np
 from app.core.logger import logger
 from app.core.config import settings
 from app.models.trade import Trade
@@ -11,6 +12,7 @@ from app.crud.curd_position import position_crud
 from app.schemas.position import PositionCreate, PositionUpdate, Position
 from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
 from app.crud.crud_user_portfolio_summary import user_portfolio_summary_crud
+from app.crud.curd_crypto import insert_crypto_data_live
 #services
 from app.services.helper.heplers import helpers
 from app.services.helper.binance_helper import binance_helper
@@ -355,6 +357,15 @@ class StraddleService:
             protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
             quantity = protfolo_details.quantity
 
+            if quantity == 0:
+                logger.info(f"No quantity found for {symbol}, skipping auto buy/sell")
+                return {
+                    "status": "SKIPPED",
+                    "reason": "No quantity found",
+                    "symbol": symbol,
+                    "trades": []
+                }
+
             buy_entry, sell_entry = self.strategy.calculate_entry_levels(current_price["price"])
 
             #check if there is a straddle position already
@@ -484,6 +495,13 @@ class StraddleService:
                                 "profit_loss_percentage": ((asset_value - asset_cost) / asset_cost * 100) if asset_cost > 0 else 0,
                                 "asset_type": item.asset_type
                             }
+
+                            if not item.asset_type == "STABLE":
+                                #Insert Data in Dynamic Table
+                                result = await insert_crypto_data_live(self.db, item.symbol);
+                                logger.info(f"Insert Crypto data for symbol {item.symbol}")
+
+
                         except Exception as asset_error:
                             logger.error(f"Error processing asset {item.symbol}: {str(asset_error)}")
                             continue
@@ -510,7 +528,7 @@ class StraddleService:
                     market_volatility = None
 
                     try:
-                        market_data = await market_analyzer.get_price_data(symbol, interval="5m", limit=10)
+                        market_data = await market_analyzer.get_price_data(symbol, interval=settings.TREADING_DEFAULT_INTERVAL, limit=settings.TREADING_DEFAULT_LIMIT)
                         if market_data is not None:
                             recent_prices = market_data['close'].tolist()
                             price_changes = [recent_prices[i] - recent_prices[i-1] for i in range(1, len(recent_prices))]
@@ -684,14 +702,30 @@ class StraddleService:
             response["metrics"]["position_size"] = quantity
             response["metrics"]["current_value"] = quantity * current_price
 
-            # Define profit percentage thresholds for more dynamic decision making
-            PROFIT_THRESHOLD_SMALL = 0.01    # 1% profit threshold for small moves (more sensitive)
-            PROFIT_THRESHOLD_MEDIUM = 0.025  # 2.5% profit threshold for medium moves
-            PROFIT_THRESHOLD_LARGE = 0.04    # 4% profit threshold for large moves
+            # Get price trend history to make smarter dynamic decisions
+            recent_price_data = await market_analyzer.get_price_data(symbol, interval=settings.TREADING_DEFAULT_INTERVAL, limit=settings.TREADING_DEFAULT_LIMIT)
+            # Extract close prices
+            recent_prices = recent_price_data['close'].tolist()
 
-            # Define price pattern thresholds
-            CONSECUTIVE_PRICE_INCREASES_THRESHOLD = 3  # Number of consecutive price increases to consider a trend
-            PRICE_VOLATILITY_THRESHOLD = 0.015  # 1.5% volatility threshold
+            # Calculate dynamic thresholds based on recent price data
+            price_changes = np.diff(recent_prices) if len(recent_prices) > 1 else []
+
+            PROFIT_THRESHOLD_SMALL, PROFIT_THRESHOLD_MEDIUM, PROFIT_THRESHOLD_LARGE = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol)
+            CONSECUTIVE_PRICE_INCREASES_THRESHOLD = helpers.dynamic_consecutive_increase_threshold(price_changes, symbol)
+            PRICE_VOLATILITY_THRESHOLD = helpers.calculate_volatility_threshold(recent_prices, symbol)
+
+            # Add the dynamic thresholds to the response
+            response["metrics"]["profit_threshold_small"] = PROFIT_THRESHOLD_SMALL
+            response["metrics"]["profit_threshold_medium"] = PROFIT_THRESHOLD_MEDIUM
+            response["metrics"]["profit_threshold_large"] = PROFIT_THRESHOLD_LARGE
+            response["metrics"]["consecutive_threshold"] = CONSECUTIVE_PRICE_INCREASES_THRESHOLD
+            response["metrics"]["volatility_threshold"] = PRICE_VOLATILITY_THRESHOLD
+
+            price_direction = "up" if sum(price_changes) > 0 else "down"
+
+            # Update response with trend information
+            response["metrics"]["trend_direction"] = price_direction
+            response["metrics"]["recent_prices"] = recent_prices[:5]  # Just show the 5 most recent ones
 
             if open_positions.status == "OPEN":
                 trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
@@ -760,7 +794,7 @@ class StraddleService:
                 return response
 
             # Get price trend history to make smarter decisions
-            recent_price_data = await market_analyzer.get_price_data(symbol, interval="5m", limit=10)
+            recent_price_data = await market_analyzer.get_price_data(symbol, interval=settings.TREADING_DEFAULT_INTERVAL, limit=settings.TREADING_DEFAULT_LIMIT)
             # Extract close prices
             recent_prices = recent_price_data['close'].tolist()
             price_changes = [recent_prices[i] - recent_prices[i-1] for i in range(1, len(recent_prices))]

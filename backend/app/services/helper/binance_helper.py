@@ -235,6 +235,93 @@ class BinanceHelper:
             logger.error(f"Error processing 5m price history for {symbol}: {str(e)}")
             raise BinanceAPIException(f"Error processing price history: {str(e)}")
 
+    #get Dynamic interval price history
+    async def get_dynamic_price_history(self, symbol: str, interval: str = "5m", intervals: int = 5) -> Dict[str, Union[Dict, List]]:
+        """
+        Get historical price data for a given symbol and interval
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT')
+            interval: Interval to fetch (e.g., '5m', '15m', '30m', '1h', '4h', '1d')
+            intervals: Number of intervals to fetch (default: 5)
+        Returns:
+            Dictionary containing historical prices, variations, and statistics
+        """
+        try:
+            formatted_symbol = symbol.replace("/", "")
+            # Get the klines data for the last 5 intervals
+            klines = self.client.get_klines(
+                symbol=formatted_symbol,
+                interval=Client.KLINE_INTERVAL_15MINUTE,
+                limit=intervals
+            )
+
+            if not klines or len(klines) < intervals:
+                raise BinanceAPIException(f"Insufficient kline data. Required: {intervals}, Got: {len(klines) if klines else 0}")
+
+            # Process each kline into a price entry
+            price_history = []
+            close_prices = []
+
+            for kline in klines:
+                close_price = float(kline[4])  # Close price
+                close_prices.append(close_price)
+
+                price_entry = {
+                    "timestamp": kline[0],  # Open time
+                    "open": float(kline[1]),
+                    "high": float(kline[2]),
+                    "low": float(kline[3]),
+                    "close": close_price,
+                    "volume": float(kline[5]),
+                    "number_of_trades": int(kline[8])
+                }
+                price_history.append(price_entry)
+
+                # Calculate variations and differences
+            close_prices = np.array(close_prices)
+            price_changes = np.diff(close_prices)
+            price_changes_percent = (price_changes / close_prices[:-1]) * 100
+
+            # Calculate statistics
+            stats = {
+                "mean_price": float(np.mean(close_prices)),
+                "std_dev": float(np.std(close_prices)),
+                "max_price": float(np.max(close_prices)),
+                "min_price": float(np.min(close_prices)),
+                "total_change": float(close_prices[-1] - close_prices[0]),
+                "total_change_percent": float((close_prices[-1] - close_prices[0]) / close_prices[0] * 100),
+                "volatility": float(np.std(price_changes_percent))  # Standard deviation of percent changes
+            }
+
+            # Add price changes to history
+            for i in range(len(price_history)-1):
+                price_history[i+1].update({
+                    "price_change": float(price_changes[i]),
+                    "price_change_percent": float(price_changes_percent[i])
+                })
+
+            # First entry doesn't have changes (it's the oldest)
+            price_history[0].update({
+                "price_change": 0.0,
+                "price_change_percent": 0.0
+            })
+
+            return {
+                "data": {
+                    "symbol": symbol,
+                    "interval": "15m",
+                    "history": price_history,
+                    "statistics": stats,
+                    "timestamp": int(datetime.utcnow().timestamp() * 1000)
+                }
+            }
+        except BinanceAPIException as e:
+            logger.error(f"Error fetching 15m price history for {symbol}: {str(e)}")
+            raise
+        except (IndexError, ValueError) as e:
+            logger.error(f"Error processing 15m price history for {symbol}: {str(e)}")
+            raise BinanceAPIException(f"Error processing price history: {str(e)}")
+
     #get the best stable coin to buy from the binance array from live market
     async def get_best_stable_coin(self) -> Dict[str, Union[str, Dict]]:
         """
