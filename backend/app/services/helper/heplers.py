@@ -23,13 +23,14 @@ class Helpers:
     ist_time = datetime.utcnow().astimezone(pytz.timezone('Asia/Kolkata'))
     return ist_time.replace(tzinfo=None)  # Strip timezone info for DB storage
 
-  def calculate_dynamic_profit_threshold(self, price_history: List[float], symbol: str) -> Tuple[float, float, float]:
+  def calculate_dynamic_profit_threshold(self, price_history: List[float], symbol: str, multiplier: float = 1.0) -> Tuple[float, float, float]:
     """
     Calculate dynamic profit thresholds based on price volatility
 
     Args:
         price_history: List of historical prices
         symbol: Trading symbol for logging
+        multiplier: Adjustment multiplier for threshold sensitivity (lower values = more sensitive)
 
     Returns:
         Tuple of (small, medium, large) threshold values
@@ -37,7 +38,7 @@ class Helpers:
     try:
         if not price_history or len(price_history) < 2:
             logger.warning(f"Insufficient price data for {symbol}. Using default thresholds.")
-            return 0.01, 0.025, 0.04
+            return 0.01 * multiplier, 0.025 * multiplier, 0.04 * multiplier
 
         prices = np.array(price_history)
         std_dev = np.std(prices)
@@ -58,16 +59,16 @@ class Helpers:
         min_intraday_move = max(0.005, price_range_pct * 0.2)  # At least 0.5%
 
         # Scale thresholds accordingly with higher minimums for intraday trading
-        threshold_small = max(0.008, min_intraday_move, volatility_ratio * 0.6)  # Minimum 0.8%
-        threshold_medium = max(0.018, min_intraday_move * 2, volatility_ratio * 1.4)  # Minimum 1.8%
-        threshold_large = max(0.03, min_intraday_move * 3, volatility_ratio * 2.2)  # Minimum 3%
+        threshold_small = max(0.008, min_intraday_move, volatility_ratio * 0.6) * multiplier  # Apply multiplier
+        threshold_medium = max(0.018, min_intraday_move * 2, volatility_ratio * 1.4) * multiplier  # Apply multiplier
+        threshold_large = max(0.03, min_intraday_move * 3, volatility_ratio * 2.2) * multiplier  # Apply multiplier
 
-        logger.info(f"Dynamic thresholds for {symbol}: small={threshold_small:.4f}, medium={threshold_medium:.4f}, large={threshold_large:.4f}, volatility={volatility_ratio:.4f}")
+        logger.info(f"Dynamic thresholds for {symbol} (multiplier={multiplier}): small={threshold_small:.4f}, medium={threshold_medium:.4f}, large={threshold_large:.4f}, volatility={volatility_ratio:.4f}")
         return threshold_small, threshold_medium, threshold_large
     except Exception as e:
         logger.error(f"Error calculating dynamic profit thresholds: {str(e)}")
         # Fallback to default values
-        return 0.01, 0.025, 0.04
+        return 0.01 * multiplier, 0.025 * multiplier, 0.04 * multiplier
 
   def dynamic_consecutive_increase_threshold(self, price_changes: List[float], symbol: str) -> int:
     """

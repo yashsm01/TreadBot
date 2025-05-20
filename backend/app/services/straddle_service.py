@@ -34,7 +34,7 @@ class StraddleStrategy:
     def calculate_entry_levels(self, current_price: float) -> Tuple[float, float]:
         """Calculate entry levels for straddle"""
         buy_entry = current_price * (1 + self.breakout_threshold)
-        sell_entry = current_price * (1 - self.breakout_threshold)
+        sell_entry = current_price * (1 - self.min_confidence)
         return buy_entry, sell_entry
 
     def calculate_position_params(self, entry_price: float, direction: str) -> Tuple[float, float]:
@@ -123,6 +123,7 @@ class StraddleService:
             long_trade = TradeCreate(
                 symbol=symbol,
                 side="BUY",
+                current_price=current_price,
                 entry_price=buy_entry,
                 quantity=quantity,
                 take_profit=buy_tp,
@@ -138,6 +139,7 @@ class StraddleService:
             short_trade = TradeCreate(
                 symbol=symbol,
                 side="SELL",
+                current_price=current_price,
                 entry_price=sell_entry,
                 quantity=quantity,
                 take_profit=sell_tp,
@@ -432,7 +434,7 @@ class StraddleService:
             logger.error(f"Error closing straddle position for {symbol}: {str(e)}")
             raise
 
-    async def update_portfolio_summary(self, symbol: str) -> Dict:
+    async def update_portfolio_summary(self, symbol: str,update_crypto: bool = True) -> Dict:
         """
         Update the portfolio summary after each straddle operation
         This collects data about all assets and stores a snapshot in the user_portfolio_summary table
@@ -496,7 +498,7 @@ class StraddleService:
                                 "asset_type": item.asset_type
                             }
 
-                            if not item.asset_type == "STABLE":
+                            if not item.asset_type == "STABLE" and update_crypto:
                                 #Insert Data in Dynamic Table
                                 result = await insert_crypto_data_live(self.db, item.symbol);
                                 logger.info(f"Insert Crypto data for symbol {item.symbol}")
@@ -710,9 +712,14 @@ class StraddleService:
             # Calculate dynamic thresholds based on recent price data
             price_changes = np.diff(recent_prices) if len(recent_prices) > 1 else []
 
-            PROFIT_THRESHOLD_SMALL, PROFIT_THRESHOLD_MEDIUM, PROFIT_THRESHOLD_LARGE = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol)
-            CONSECUTIVE_PRICE_INCREASES_THRESHOLD = helpers.dynamic_consecutive_increase_threshold(price_changes, symbol)
-            PRICE_VOLATILITY_THRESHOLD = helpers.calculate_volatility_threshold(recent_prices, symbol)
+            # For intraday, use more sensitive thresholds
+            PROFIT_THRESHOLD_SMALL = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol, multiplier=0.6)[0]
+            PROFIT_THRESHOLD_MEDIUM = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol, multiplier=0.8)[1]
+            PROFIT_THRESHOLD_LARGE = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol, multiplier=0.9)[2]
+
+            # For intraday, we care about shorter trends
+            CONSECUTIVE_PRICE_INCREASES_THRESHOLD = max(2, helpers.dynamic_consecutive_increase_threshold(price_changes, symbol) - 1)
+            PRICE_VOLATILITY_THRESHOLD = helpers.calculate_volatility_threshold(recent_prices, symbol) * 0.8  # More sensitive
 
             # Add the dynamic thresholds to the response
             response["metrics"]["profit_threshold_small"] = PROFIT_THRESHOLD_SMALL
@@ -989,7 +996,7 @@ class StraddleService:
             # At the end of the function, before returning and after all operations are complete,
             # update the portfolio summary
             try:
-                portfolio_summary = await self.update_portfolio_summary(symbol)
+                portfolio_summary = await self.update_portfolio_summary(symbol,update_crypto=False)
                 # Add portfolio summary to response
                 response["portfolio_summary"] = portfolio_summary
             except Exception as summary_error:

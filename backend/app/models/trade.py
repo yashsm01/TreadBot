@@ -32,6 +32,7 @@ class Trade(Base):
     unrealized_pnl = Column(Float, nullable=True)
     status = Column(String)  # "PENDING", "OPEN", "CLOSED", "CANCELLED"
     position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)
+    current_price = Column(Float, nullable=True)
 
     position = relationship("Position", back_populates="trades")
 

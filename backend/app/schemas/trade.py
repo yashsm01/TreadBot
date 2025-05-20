@@ -8,6 +8,7 @@ class TradeBase(BaseModel):
     side: str
     quantity: float = Field(gt=0)
     entry_price: float = Field(gt=0)
+    current_price: float = Field(gt=0)
     take_profit: Optional[float] = Field(gt=0, default=None)
     stop_loss: Optional[float] = Field(gt=0, default=None)
     status: str
