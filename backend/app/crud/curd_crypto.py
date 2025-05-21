@@ -128,12 +128,13 @@ async def create_crypto_table(db: AsyncSession, symbol: str, month: int = None, 
             # Create table
             await db.execute(text(f'''
             CREATE TABLE IF NOT EXISTS "{table_name}" (
-                id SERIAL PRIMARY KEY,
-                symbol VARCHAR(50) NOT NULL,
-                name VARCHAR(100),
-                current_price FLOAT,
-                timestamp TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(50) NOT NULL,
+                    name VARCHAR(100),
+                    current_price NUMERIC(18, 8),  -- better precision than FLOAT
+                    swap_transactions_id VARCHAR(255),  -- add REFERENCES if foreign key
+                    timestamp TIMESTAMP,      -- renamed to avoid confusion
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             '''))
 
@@ -170,7 +171,7 @@ async def create_crypto_table(db: AsyncSession, symbol: str, month: int = None, 
         logger.error(f"Critical error in create_crypto_table: {str(e)}")
         return False
 
-async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: int = None, year: int = None) -> bool:
+async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: int = None, year: int = None, swap_transaction_id: str = None) -> bool:
     """Insert data into a cryptocurrency table
 
     Args:
@@ -179,7 +180,7 @@ async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: i
         data: Dictionary containing data to insert (must have current_price, timestamp fields)
         month: Optional month (1-12)
         year: Optional year
-
+        swap_transaction_id: Optional swap transaction id
     Returns:
         True if data was inserted successfully, False otherwise
     """
@@ -236,8 +237,8 @@ async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: i
 
             # Insert data
             insert_query = text(f"""
-            INSERT INTO "{table_name}" (symbol, name, current_price, timestamp, created_at)
-            VALUES (:symbol, :name, :current_price, :timestamp, :created_at)
+            INSERT INTO "{table_name}" (symbol, name, current_price, swap_transactions_id, timestamp, created_at)
+            VALUES (:symbol, :name, :current_price, :swap_transactions_id, :timestamp, :created_at)
             RETURNING id
             """)
 
@@ -248,6 +249,7 @@ async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: i
                     'symbol': symbol,
                     'name': data.get('name', symbol),
                     'current_price': data['current_price'],
+                    'swap_transactions_id': data.get('swap_transactions_id', swap_transaction_id),
                     'timestamp': timestamp,
                     'created_at': created_at
                 }
@@ -276,7 +278,7 @@ async def insert_crypto_data(db: AsyncSession, symbol: str, data: dict, month: i
         logger.error(f"Critical error in insert_crypto_data: {str(e)}")
         return False
 
-async def insert_crypto_data_live(db: AsyncSession, symbol: str) -> bool:
+async def insert_crypto_data_live(db: AsyncSession, symbol: str, swap_transaction_id: str = None) -> bool:
     """Insert live cryptocurrency data into a table
 
     Args:
@@ -306,7 +308,7 @@ async def insert_crypto_data_live(db: AsyncSession, symbol: str) -> bool:
             get_price['timestamp'] = datetime.now()
 
         print(get_price)
-        await insert_crypto_data(db, symbol, get_price)
+        await insert_crypto_data(db, symbol, get_price, swap_transaction_id=swap_transaction_id)
         return get_price
     except Exception as e:
         logger.error(f"Critical error in insert_crypto_data_live: {str(e)}")

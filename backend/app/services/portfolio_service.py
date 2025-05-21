@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.models.trade import Trade
 from app.crud.crud_trade import trade as trade_crud
 from app.services.notifications import notification_service
+from app.services.helper.heplers import helpers
 
 class PortfolioService:
     def __init__(self, db: AsyncSession):

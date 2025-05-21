@@ -12,13 +12,13 @@ from app.schemas.portfolio import PortfolioCreate, PortfolioUpdate
 from app.schemas.swap_transaction import SwapTransactionCreate
 from app.models.portfolio import Portfolio  # Add import for direct database model usage
 from app.models.swap_transaction import SwapTransaction  # Add import for swap transaction model
-
+from app.crud.curd_crypto import insert_crypto_data_live
 
 class SwapService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def swap_symbol_stable_coin(self, symbol: str, quantity: float, current_price: float) -> Dict[str, Any]:
+    async def swap_symbol_stable_coin(self, symbol: str, quantity: float, current_price: float, target_stablecoin: str = "USDT") -> Dict[str, Any]:
         """
         Swap a cryptocurrency for the best available stablecoin
 
@@ -35,9 +35,12 @@ class SwapService:
             crypto_details = await binance_helper.get_price(symbol)
             current_price = crypto_details["price"]
 
-            # Get the best stable coin to buy
-            stable_coin_data = await binance_helper.get_best_stable_coin()
-            stable_coin = stable_coin_data["best_stable"]
+            if target_stablecoin:
+                stable_coin = target_stablecoin
+            else:
+                # Get the best stable coin to buy
+                stable_coin_data = await binance_helper.get_best_stable_coin()
+                stable_coin = stable_coin_data["best_stable"]
 
             # Check if swaps are allowed
             swap_status = True
@@ -147,6 +150,7 @@ class SwapService:
             await self.db.commit()
             await self.db.refresh(swap_transaction_db)
 
+            result = await insert_crypto_data_live(self.db, symbol,swap_transaction_id=transaction_id)
             # Create transaction details for logging
             transaction_details = {
                 "transaction_id": transaction_id,
@@ -165,7 +169,8 @@ class SwapService:
             return {
                 "status": "success",
                 "message": f"Successfully swapped {quantity} {symbol} for {stable_amount} {stable_coin}",
-                "transaction": transaction_details
+                "transaction": transaction_details,
+                "swap_transaction_id": transaction_details["transaction_id"]
             }
 
         except Exception as e:
@@ -176,7 +181,7 @@ class SwapService:
                 "error_details": str(e)
             }
 
-    async def swap_stable_coin_symbol(self, stable_coin: str, symbol: str, amount: float) -> Dict[str, Any]:
+    async def swap_stable_coin_symbol(self, stable_coin: str, symbol: str, amount: float, target_stablecoin: str = "USDT") -> Dict[str, Any]:
         """
         Swap from stablecoin to cryptocurrency
 

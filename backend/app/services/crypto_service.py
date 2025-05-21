@@ -4,8 +4,8 @@ from typing import List, Optional
 from datetime import datetime
 import ccxt
 import logging
-from ..models.crypto import Cryptocurrency, CryptoPair
-from ..core.logger import logger
+from app.models.crypto import Cryptocurrency, CryptoPair
+from app.core.logger import logger
 
 class CryptoService:
     def __init__(self, db: Session = None):

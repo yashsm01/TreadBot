@@ -60,10 +60,10 @@ class StraddleStrategy:
             take_profit = entry_price - tp_amount
             stop_loss = entry_price + sl_amount
 
-        return round(take_profit, 2), round(stop_loss, 2)
+        return take_profit, stop_loss
 class StraddleService:
     # Make straddle_status a class variable so it's shared across all instances
-    straddle_status = False
+    straddle_status = True
     # Add processing lock flags
     _processing_locks = {}
 
@@ -434,10 +434,15 @@ class StraddleService:
             logger.error(f"Error closing straddle position for {symbol}: {str(e)}")
             raise
 
-    async def update_portfolio_summary(self, symbol: str,update_crypto: bool = True) -> Dict:
+    async def update_portfolio_summary(self, symbol: str, update_crypto: bool = True, include_market_metrics: bool = False) -> Dict:
         """
         Update the portfolio summary after each straddle operation
         This collects data about all assets and stores a snapshot in the user_portfolio_summary table
+
+        Args:
+            symbol: The trading symbol that triggered the update
+            update_crypto: Whether to update crypto data in the dynamic table
+            include_market_metrics: Whether to include additional market metrics for intraday analysis
         """
         try:
             logger.info(f"Updating portfolio summary for symbol {symbol}")
@@ -458,6 +463,14 @@ class StraddleService:
                     # Prepare assets dict for JSON storage
                     assets_data = {}
 
+                    # Track market cap weighted metrics
+                    total_market_cap = 0.0
+                    weighted_volatility = 0.0
+                    weighted_volume = 0.0
+
+                    # For intraday analytics, track additional metrics
+                    intraday_metrics = {}
+
                     # Process each asset in portfolio
                     for item in portfolio_items:
                         try:
@@ -466,10 +479,14 @@ class StraddleService:
                             if item.asset_type == "STABLE":
                                 # For stablecoins, use 1.0 as the price since they're pegged to $1
                                 current_price = 1.0
+                                price_change_24h = 0.0
+                                volume_24h = 0.0
                             else:
-                                # For other assets, fetch price from Binance
-                                price_data = await binance_helper.get_price(item.symbol)
-                                current_price = price_data["price"]
+                                # For other assets, fetch enhanced price data from Binance
+                                price_data = await binance_helper.get_enhanced_price_data(item.symbol)
+                                current_price = price_data.get("price", 0.0)
+                                price_change_24h = price_data.get("price_change_percentage_24h", 0.0)
+                                volume_24h = price_data.get("volume_24h", 0.0)
 
                             # Calculate value
                             asset_value = item.quantity * current_price
@@ -484,8 +501,66 @@ class StraddleService:
                                 stable_value += asset_value
                             else:
                                 crypto_value += asset_value
+                                # For non-stablecoins, add to market cap weighting
+                                total_market_cap += asset_value
 
-                            # Add to assets data
+                                # For intraday analysis, fetch and store additional metrics
+                                if include_market_metrics and item.asset_type != "STABLE":
+                                    try:
+                                        # Get short-term data for intraday analysis
+                                        short_term_data = await market_analyzer.get_price_data(
+                                            item.symbol,
+                                            interval="5m",
+                                            limit=60
+                                        )
+
+                                        if short_term_data is not None:
+                                            # Calculate intraday volatility
+                                            short_term_prices = short_term_data['close'].tolist()
+                                            intraday_vol = helpers.calculate_intraday_volatility(short_term_prices)
+
+                                            # Calculate relative volume
+                                            short_term_volumes = short_term_data['volume'].tolist()
+                                            rel_volume = helpers.calculate_relative_volume(short_term_volumes)
+
+                                            # Detect intraday patterns
+                                            pattern = helpers.detect_intraday_pattern(
+                                                short_term_data['open'].tolist(),
+                                                short_term_data['high'].tolist(),
+                                                short_term_data['low'].tolist(),
+                                                short_term_data['close'].tolist(),
+                                                short_term_volumes
+                                            )
+
+                                            # Get support/resistance levels
+                                            support_levels, resistance_levels = helpers.find_support_resistance_levels(
+                                                short_term_data['high'].tolist(),
+                                                short_term_data['low'].tolist(),
+                                                current_price,
+                                                num_levels=2
+                                            )
+
+                                            # Store intraday metrics for this asset
+                                            intraday_metrics[item.symbol] = {
+                                                "intraday_volatility": intraday_vol,
+                                                "relative_volume": rel_volume,
+                                                "pattern": pattern,
+                                                "support_levels": support_levels,
+                                                "resistance_levels": resistance_levels,
+                                                "recent_price_action": short_term_prices[-5:],
+                                                "price_change_24h": price_change_24h
+                                            }
+
+                                            # Contribute to weighted metrics
+                                            weighted_volatility += intraday_vol * asset_value
+                                            weighted_volume += rel_volume * asset_value
+                                    except Exception as metrics_error:
+                                        logger.error(f"Error calculating intraday metrics for {item.symbol}: {str(metrics_error)}")
+
+                            # Add to assets data with enhanced information
+                            profit_loss = asset_value - asset_cost
+                            profit_loss_pct = ((asset_value - asset_cost) / asset_cost * 100) if asset_cost > 0 else 0
+
                             assets_data[item.symbol] = {
                                 "symbol": item.symbol,
                                 "quantity": item.quantity,
@@ -493,16 +568,19 @@ class StraddleService:
                                 "current_price": current_price,
                                 "value": asset_value,
                                 "cost_basis": asset_cost,
-                                "profit_loss": asset_value - asset_cost,
-                                "profit_loss_percentage": ((asset_value - asset_cost) / asset_cost * 100) if asset_cost > 0 else 0,
-                                "asset_type": item.asset_type
+                                "profit_loss": profit_loss,
+                                "profit_loss_percentage": profit_loss_pct,
+                                "asset_type": item.asset_type,
+                                "price_change_24h": price_change_24h,
+                                "volume_24h": volume_24h,
+                                "allocation_percentage": (asset_value / total_value * 100) if total_value > 0 else 0,
+                                "last_updated": datetime.now().isoformat()
                             }
 
                             if not item.asset_type == "STABLE" and update_crypto:
                                 #Insert Data in Dynamic Table
-                                result = await insert_crypto_data_live(self.db, item.symbol);
+                                result = await insert_crypto_data_live(self.db, item.symbol)
                                 logger.info(f"Insert Crypto data for symbol {item.symbol}")
-
 
                         except Exception as asset_error:
                             logger.error(f"Error processing asset {item.symbol}: {str(asset_error)}")
@@ -510,6 +588,11 @@ class StraddleService:
 
                     # Calculate total profit/loss
                     total_profit_loss = total_value - total_cost_basis
+
+                    # Calculate portfolio-wide intraday metrics if we have market cap data
+                    if total_market_cap > 0:
+                        weighted_volatility = weighted_volatility / total_market_cap
+                        weighted_volume = weighted_volume / total_market_cap
 
                     # Get recent trade count
                     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -565,6 +648,22 @@ class StraddleService:
                     if stable_ratio > 0.5:
                         risk_level = 1  # Very low risk if majority in stablecoins
 
+                    # Enhanced metrics for intraday trading
+                    if include_market_metrics:
+                        # Adjust risk level based on intraday volatility
+                        if weighted_volatility > 0.02:
+                            risk_level = min(5, risk_level + 1)
+
+                        # Generate trading recommendations based on portfolio and market conditions
+                        trading_recommendations = self._generate_trading_recommendations(
+                            assets_data,
+                            intraday_metrics,
+                            stable_ratio,
+                            market_trend
+                        )
+                    else:
+                        trading_recommendations = []
+
                     try:
                         # Create portfolio summary record
                         summary = await user_portfolio_summary_crud.create_summary(
@@ -584,8 +683,8 @@ class StraddleService:
 
                         logger.info(f"Successfully updated portfolio summary. Total value: ${total_value:.2f}, P/L: ${total_profit_loss:.2f}")
 
-                        # Return summary for reference
-                        return {
+                        # Create enhanced response with intraday metrics if requested
+                        response = {
                             "id": summary.id,
                             "timestamp": summary.timestamp.isoformat(),
                             "total_value": summary.total_value,
@@ -593,14 +692,27 @@ class StraddleService:
                             "total_profit_loss_percentage": summary.total_profit_loss_percentage,
                             "crypto_value": summary.crypto_value,
                             "stable_value": summary.stable_value,
+                            "stable_ratio": stable_ratio * 100,  # Convert to percentage
                             "daily_change": summary.daily_change,
                             "weekly_change": summary.weekly_change,
                             "monthly_change": summary.monthly_change,
                             "trades_today": summary.trades_today,
                             "swaps_today": summary.swaps_today,
                             "market_trend": summary.market_trend,
-                            "risk_level": summary.risk_level
+                            "risk_level": summary.risk_level,
+                            "last_updated": datetime.now().isoformat()
                         }
+
+                        # Add intraday metrics if requested
+                        if include_market_metrics:
+                            response["intraday_metrics"] = {
+                                "portfolio_volatility": weighted_volatility,
+                                "portfolio_volume_profile": weighted_volume,
+                                "asset_metrics": intraday_metrics,
+                                "trading_recommendations": trading_recommendations
+                            }
+
+                        return response
                     except Exception as summary_error:
                         logger.error(f"Error creating portfolio summary: {str(summary_error)}")
                         # Return a simplified response when the summary table doesn't exist
@@ -623,6 +735,122 @@ class StraddleService:
                 "status": "error",
                 "message": f"Failed to update portfolio summary: {str(e)}"
             }
+
+    def _generate_trading_recommendations(self, assets_data, intraday_metrics, stable_ratio, market_trend):
+        """
+        Generate trading recommendations based on portfolio analysis and market conditions
+
+        Args:
+            assets_data: Dictionary of asset data from portfolio
+            intraday_metrics: Dictionary of intraday metrics for each asset
+            stable_ratio: Ratio of stablecoins in portfolio
+            market_trend: Overall market trend (up/down)
+
+        Returns:
+            List of trading recommendations
+        """
+        recommendations = []
+
+        try:
+            # 1. Check if we're overexposed to crypto (low stable ratio during downtrend)
+            if market_trend == "down" and stable_ratio < 0.3:
+                recommendations.append({
+                    "type": "HEDGE",
+                    "action": "INCREASE_STABLE",
+                    "reason": "Low stablecoin allocation during market downtrend",
+                    "suggestion": "Consider swapping some crypto to stablecoins",
+                    "priority": "HIGH"
+                })
+
+            # 2. Check if we're underexposed to crypto (high stable ratio during uptrend)
+            elif market_trend == "up" and stable_ratio > 0.6:
+                recommendations.append({
+                    "type": "ALLOCATION",
+                    "action": "INCREASE_CRYPTO",
+                    "reason": "High stablecoin allocation during market uptrend",
+                    "suggestion": "Consider deploying stablecoins into crypto assets",
+                    "priority": "MEDIUM"
+                })
+
+            # 3. Check for high volatility assets that might need attention
+            for symbol, metrics in intraday_metrics.items():
+                # Skip if no metrics or not a real crypto asset
+                if not metrics or symbol not in assets_data or assets_data[symbol]["asset_type"] == "STABLE":
+                    continue
+
+                # Get asset data
+                asset = assets_data[symbol]
+
+                # Check for bearish patterns with large holdings
+                if (metrics.get("pattern") in ["double_top", "head_shoulders", "bearish_trend"] and
+                    asset["allocation_percentage"] > 15 and  # Significant allocation
+                    metrics.get("price_change_24h", 0) < -5):  # Already declining
+
+                    recommendations.append({
+                        "type": "RISK_MANAGEMENT",
+                        "action": "REDUCE_EXPOSURE",
+                        "symbol": symbol,
+                        "reason": f"Bearish pattern detected for {symbol} with large allocation",
+                        "suggestion": "Consider reducing position size",
+                        "priority": "HIGH",
+                        "pattern": metrics.get("pattern")
+                    })
+
+                # Check for bullish patterns in underweighted assets
+                elif (metrics.get("pattern") in ["double_bottom", "inverse_head_shoulders", "bullish_trend"] and
+                      asset["allocation_percentage"] < 5 and  # Small allocation
+                      metrics.get("relative_volume", 0) > 1.2):  # Higher than average volume
+
+                    recommendations.append({
+                        "type": "OPPORTUNITY",
+                        "action": "INCREASE_EXPOSURE",
+                        "symbol": symbol,
+                        "reason": f"Bullish pattern detected for {symbol} with small allocation",
+                        "suggestion": "Consider increasing position size",
+                        "priority": "MEDIUM",
+                        "pattern": metrics.get("pattern")
+                    })
+
+                # Check for assets near support/resistance
+                support_levels = metrics.get("support_levels", [])
+                resistance_levels = metrics.get("resistance_levels", [])
+                current_price = asset["current_price"]
+
+                # Near resistance - potential exit point
+                for level in resistance_levels:
+                    if 0.97 <= current_price / level <= 1.03:  # Within 3% of resistance
+                        recommendations.append({
+                            "type": "TECHNICAL",
+                            "action": "CONSIDER_PROFIT_TAKING",
+                            "symbol": symbol,
+                            "reason": f"{symbol} approaching resistance at {level:.2f}",
+                            "suggestion": "Consider taking partial profits",
+                            "priority": "MEDIUM"
+                        })
+                        break
+
+                # Near support - potential entry point
+                for level in support_levels:
+                    if 0.97 <= current_price / level <= 1.03:  # Within 3% of support
+                        recommendations.append({
+                            "type": "TECHNICAL",
+                            "action": "CONSIDER_ENTRY",
+                            "symbol": symbol,
+                            "reason": f"{symbol} approaching support at {level:.2f}",
+                            "suggestion": "Consider adding to position",
+                            "priority": "MEDIUM"
+                        })
+                        break
+
+            # Sort recommendations by priority
+            priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+            recommendations.sort(key=lambda x: priority_order.get(x.get("priority", "LOW"), 3))
+
+            return recommendations
+
+        except Exception as e:
+            logger.error(f"Error generating trading recommendations: {str(e)}")
+            return []
 
     async def auto_buy_sell_straddle_inprogress(self, symbol: str) -> Dict:
         """Auto buy or sell straddle based on market conditions"""
@@ -654,10 +882,18 @@ class StraddleService:
             },
             "swap_status": {
                 "performed": False,
+                "swap_transaction_id": None,
                 "from_coin": "",
                 "to_coin": "",
                 "amount": 0,
                 "price": 0
+            },
+            "market_analysis": {
+                "short_term_trend": "",
+                "intraday_pattern": "",
+                "support_levels": [],
+                "resistance_levels": [],
+                "volume_profile": ""
             }
         }
 
@@ -704,18 +940,82 @@ class StraddleService:
             response["metrics"]["position_size"] = quantity
             response["metrics"]["current_value"] = quantity * current_price
 
-            # Get price trend history to make smarter dynamic decisions
-            recent_price_data = await market_analyzer.get_price_data(symbol, interval=settings.TREADING_DEFAULT_INTERVAL, limit=settings.TREADING_DEFAULT_LIMIT)
-            # Extract close prices
-            recent_prices = recent_price_data['close'].tolist()
+            # Get enhanced market data for intraday analysis (include volume, OHLC, and more candlesticks)
+            # Use shorter intervals for more granular intraday analysis
+            short_interval = "5m"  # 5-minute intervals for short-term trends
+            medium_interval = "15m"  # 15-minute intervals for medium-term trends
+            long_interval = settings.TREADING_DEFAULT_INTERVAL  # Keep original interval for consistency
 
-            # Calculate dynamic thresholds based on recent price data
+            # Get historical price data with different timeframes
+            short_term_data = await market_analyzer.get_price_data(symbol, interval=short_interval, limit=60)  # Last 5 hours
+            medium_term_data = await market_analyzer.get_price_data(symbol, interval=medium_interval, limit=48)  # Last 12 hours
+            long_term_data = await market_analyzer.get_price_data(symbol, interval=long_interval, limit=settings.TREADING_DEFAULT_LIMIT)
+
+            # Extract close prices and volumes
+            recent_prices = long_term_data['close'].tolist()
+            recent_volumes = long_term_data['volume'].tolist()
+            short_term_prices = short_term_data['close'].tolist()
+            short_term_volumes = short_term_data['volume'].tolist()
+
+            # Calculate intraday price changes
             price_changes = np.diff(recent_prices) if len(recent_prices) > 1 else []
+            short_term_changes = np.diff(short_term_prices) if len(short_term_prices) > 1 else []
 
-            # For intraday, use more sensitive thresholds
+            # Enhanced market analysis for intraday trading
+            # Identify key support and resistance levels
+            support_levels, resistance_levels = helpers.find_support_resistance_levels(
+                long_term_data['high'].tolist(),
+                long_term_data['low'].tolist(),
+                current_price,
+                num_levels=3
+            )
+
+            # Calculate volume profile to detect accumulation/distribution
+            volume_profile = helpers.analyze_volume_profile(recent_prices, recent_volumes)
+
+            # Detect intraday patterns
+            intraday_pattern = helpers.detect_intraday_pattern(
+                short_term_data['open'].tolist(),
+                short_term_data['high'].tolist(),
+                short_term_data['low'].tolist(),
+                short_term_data['close'].tolist(),
+                short_term_volumes
+            )
+
+            # Determine time of day effect (some hours have predictable patterns)
+            current_hour = datetime.now().hour
+            time_of_day_factor = helpers.get_time_of_day_factor(current_hour, symbol)
+
+            # Enhanced volatility metrics for intraday
+            intraday_volatility = helpers.calculate_intraday_volatility(short_term_prices)
+
+            # Calculate relative volume compared to average
+            relative_volume = helpers.calculate_relative_volume(recent_volumes)
+
+            # Update response with enhanced market analysis
+            response["market_analysis"]["short_term_trend"] = "up" if sum(short_term_changes[-10:]) > 0 else "down"
+            response["market_analysis"]["intraday_pattern"] = intraday_pattern
+            response["market_analysis"]["support_levels"] = support_levels
+            response["market_analysis"]["resistance_levels"] = resistance_levels
+            response["market_analysis"]["volume_profile"] = volume_profile
+            response["market_analysis"]["time_of_day_factor"] = time_of_day_factor
+            response["market_analysis"]["intraday_volatility"] = intraday_volatility
+            response["market_analysis"]["relative_volume"] = relative_volume
+
+            # For intraday, use more sensitive and adaptive thresholds
             PROFIT_THRESHOLD_SMALL = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol, multiplier=0.6)[0]
             PROFIT_THRESHOLD_MEDIUM = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol, multiplier=0.8)[1]
             PROFIT_THRESHOLD_LARGE = helpers.calculate_dynamic_profit_threshold(recent_prices, symbol, multiplier=0.9)[2]
+
+            # Make thresholds time-of-day aware - adjust based on historical volatility patterns at this time
+            if time_of_day_factor > 1.2:  # High activity time periods
+                PROFIT_THRESHOLD_SMALL *= 1.2
+                PROFIT_THRESHOLD_MEDIUM *= 1.1
+                PROFIT_THRESHOLD_LARGE *= 1.05
+            elif time_of_day_factor < 0.8:  # Low activity time periods
+                PROFIT_THRESHOLD_SMALL *= 0.8
+                PROFIT_THRESHOLD_MEDIUM *= 0.9
+                PROFIT_THRESHOLD_LARGE *= 0.95
 
             # For intraday, we care about shorter trends
             CONSECUTIVE_PRICE_INCREASES_THRESHOLD = max(2, helpers.dynamic_consecutive_increase_threshold(price_changes, symbol) - 1)
@@ -729,10 +1029,12 @@ class StraddleService:
             response["metrics"]["volatility_threshold"] = PRICE_VOLATILITY_THRESHOLD
 
             price_direction = "up" if sum(price_changes) > 0 else "down"
+            short_term_price_direction = "up" if sum(short_term_changes) > 0 else "down"
 
             # Update response with trend information
             response["metrics"]["trend_direction"] = price_direction
             response["metrics"]["recent_prices"] = recent_prices[:5]  # Just show the 5 most recent ones
+            # Rest of the auto_buy_sell_straddle_inprogress function remains the same
 
             if open_positions.status == "OPEN":
                 trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
@@ -800,17 +1102,6 @@ class StraddleService:
                         response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
                 return response
 
-            # Get price trend history to make smarter decisions
-            recent_price_data = await market_analyzer.get_price_data(symbol, interval=settings.TREADING_DEFAULT_INTERVAL, limit=settings.TREADING_DEFAULT_LIMIT)
-            # Extract close prices
-            recent_prices = recent_price_data['close'].tolist()
-            price_changes = [recent_prices[i] - recent_prices[i-1] for i in range(1, len(recent_prices))]
-            price_direction = "up" if sum(price_changes) > 0 else "down"
-
-            # Update response with trend information
-            response["metrics"]["trend_direction"] = price_direction
-            response["metrics"]["recent_prices"] = recent_prices
-
             # Count consecutive increases/decreases to detect trend strength
             consecutive_same_direction = 1
             for i in range(1, len(price_changes)):
@@ -850,42 +1141,131 @@ class StraddleService:
                 buy_profit_pct = 0
                 sell_profit_pct = 0
 
-            # Determine if we should close positions based on multiple factors
+            # Enhanced decision making for intraday trading
             should_close_buy = False
             should_close_sell = False
             should_swap_to_stable = False
             should_swap_from_stable = False
+            swap_percentage = 0.5  # Default swap percentage
 
-            # Dynamic threshold based on trend strength and volatility
+            # Dynamic threshold based on multiple factors
             dynamic_threshold = PROFIT_THRESHOLD_SMALL
+
+            # Adjust threshold based on trend strength and volatility
             if consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
                 dynamic_threshold = PROFIT_THRESHOLD_MEDIUM
             if price_volatility >= PRICE_VOLATILITY_THRESHOLD:
                 dynamic_threshold = PROFIT_THRESHOLD_LARGE
 
+            # Further adjust based on intraday pattern recognition
+            if intraday_pattern in ["double_top", "head_shoulders"]:
+                dynamic_threshold *= 0.9  # Lower threshold to exit earlier on bearish patterns
+            elif intraday_pattern in ["double_bottom", "inverse_head_shoulders"]:
+                dynamic_threshold *= 1.1  # Higher threshold to stay in bullish patterns
+
+            # Factor in volume profile
+            if volume_profile == "distribution":
+                dynamic_threshold *= 0.85  # Lower threshold on distribution (selling pressure)
+            elif volume_profile == "accumulation":
+                dynamic_threshold *= 1.15  # Higher threshold on accumulation (buying pressure)
+
+            # Factor in relative volume
+            if relative_volume > 1.5:  # Much higher volume than average
+                dynamic_threshold *= 0.9  # More sensitive threshold as high volume suggests stronger moves
+
+            # Factor in proximity to support/resistance levels
+            for level in resistance_levels:
+                # If we're approaching a resistance level (within 1%)
+                if current_price * 1.01 >= level >= current_price:
+                    dynamic_threshold *= 0.85  # Lower threshold to take profit sooner
+                    break
+
+            for level in support_levels:
+                # If we're approaching a support level (within 1%)
+                if current_price <= level <= current_price * 1.01:
+                    dynamic_threshold *= 0.85  # Lower threshold to close positions sooner
+                    break
+
             # Update response with threshold
             response["metrics"]["profit_threshold"] = dynamic_threshold
 
             # Profitable BUY condition - if price has increased enough from our buy entry
-            if buy_profit_pct >= dynamic_threshold:
+            if buy_profit_pct >= dynamic_threshold or buy_profit_pct >= 0:
                 should_close_buy = True
 
-                # If price is trending up strongly, consider keeping some position
-                if price_direction == "up" and consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
-                    # Only swap half to stablecoin to keep some exposure to further upside
+                # Determine if and how much to swap to stablecoin based on multiple factors
+                if price_direction == "up":
+                    # Determine swap percentage based on market conditions
+                    if intraday_pattern in ["double_top", "head_shoulders"]:
+                        # Bearish patterns despite uptrend - swap a larger percentage
+                        swap_percentage = 0.7
+                        should_swap_to_stable = True
+                    elif consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
+                        # Strong uptrend - swap a moderate amount to secure some profits
+                        swap_percentage = 0.4
+                        should_swap_to_stable = True
+                    elif time_of_day_factor < 0.8:
+                        # Low activity period - safer to secure more profits
+                        swap_percentage = 0.6
+                        should_swap_to_stable = True
+                    else:
+                        # Default in uptrend - swap a smaller percentage
+                        swap_percentage = 0.3
+                        should_swap_to_stable = True
+                else:  # downtrend
+                    # In a downtrend, consider larger swaps to stablecoin
+                    swap_percentage = 0.8
                     should_swap_to_stable = True
+
+                    # If we're seeing high volatility and downtrend
+                    if price_volatility >= PRICE_VOLATILITY_THRESHOLD:
+                        swap_percentage = 0.9  # Even higher percentage
+
+                    # If volume is higher than average in a downtrend
+                    if relative_volume > 1.3:
+                        swap_percentage = 1.0  # Swap everything
 
             # Profitable SELL condition - if price has decreased enough from our sell entry
-            if sell_profit_pct >= dynamic_threshold:
+            if sell_profit_pct >= dynamic_threshold or sell_profit_pct >= 0:
                 should_close_sell = True
 
-                # If price is trending down strongly, consider swapping all to stablecoin
-                if price_direction == "down" and consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
+                # Determine if and how much to swap to stablecoin based on multiple factors
+                if price_direction == "down":
+                    # Determine swap percentage based on market conditions
+                    if intraday_pattern in ["double_bottom", "inverse_head_shoulders"]:
+                        # Bullish patterns despite downtrend - swap a smaller percentage
+                        swap_percentage = 0.5
+                    elif consecutive_same_direction >= CONSECUTIVE_PRICE_INCREASES_THRESHOLD:
+                        # Strong downtrend - swap a larger percentage
+                        swap_percentage = 0.8
+                    elif volume_profile == "distribution":
+                        # High selling pressure - swap more to stablecoin
+                        swap_percentage = 0.9
+                    else:
+                        # Default in downtrend - swap a moderate amount
+                        swap_percentage = 0.7
+
+                    should_swap_to_stable = True
+                else:  # uptrend
+                    # In an uptrend after profit from selling, still consider some stablecoin
+                    swap_percentage = 0.4
                     should_swap_to_stable = True
 
-            # If price rebounds after a downtrend, buy back in
-            if price_direction == "up" and consecutive_same_direction >= 2 and should_swap_to_stable:
-                should_swap_from_stable = True
+            # Enhanced swap-back logic for buying back into crypto
+            # If price rebounds after a downtrend, consider buying back
+            if price_direction == "up" and consecutive_same_direction >= 2:
+                # Check for bullish intraday patterns
+                if intraday_pattern in ["double_bottom", "inverse_head_shoulders"]:
+                    should_swap_from_stable = True
+                # Check if we're bouncing off a support level
+                elif any(abs(current_price - support) / support < 0.02 for support in support_levels):
+                    should_swap_from_stable = True
+                # Check volume profile
+                elif volume_profile == "accumulation" and relative_volume > 1.2:
+                    should_swap_from_stable = True
+                # Time of day effect - if historically good time to buy
+                elif time_of_day_factor > 1.3:
+                    should_swap_from_stable = True
 
             # Execute the determined strategy
             if (should_close_buy or should_close_sell) and current_price > buy_trades[0].entry_price:
@@ -895,13 +1275,43 @@ class StraddleService:
                 # create new straddle trades
                 new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
 
-                # If we've made significant profit and price trending up, could hold position
-                if buy_profit_pct >= PROFIT_THRESHOLD_MEDIUM and price_direction == "up":
-                    logger.info(f"Holding {symbol} position due to strong uptrend, profit: {buy_profit_pct*100:.2f}%")
+                # If we should swap to stablecoin
+                swap_performed = False
+                should_swap_to_stable = False
+                if should_swap_to_stable:
+                    logger.info(f"Swapping {symbol} to stablecoin due to price increase, profit: {buy_profit_pct*100:.2f}%")
+
+                    # Calculate amount to swap based on determined percentage
+                    swap_amount = quantity * swap_percentage
+                    if swap_amount > 0:
+                        # Get the best stablecoin to swap to
+                        stable_coin_data = await binance_helper.get_best_stable_coin()
+                        target_stable = stable_coin_data["best_stable"]
+
+                        swap_result = await swap_service.swap_symbol_stable_coin(
+                            symbol,
+                            swap_amount,
+                            current_price,
+                            target_stablecoin=target_stable
+                        )
+                        swap_performed = True
+
+                        # Update swap status
+                        response["swap_status"]["swap_transaction_id"] = swap_result["transaction"]["transaction_id"]
+                        response["swap_status"]["performed"] = True
+                        response["swap_status"]["from_coin"] = symbol
+                        response["swap_status"]["to_coin"] = target_stable
+                        response["swap_status"]["amount"] = swap_amount
+                        response["swap_status"]["price"] = current_price
+                        response["swap_status"]["percentage"] = swap_percentage * 100
+                        response["swap_status"]["reason"] = "Price increased with uptrend"
 
                 # Update response
                 response["status"] = "PROFIT_TAKEN"
-                response["reason"] = f"Price increased to {current_price} from {buy_trades[0].entry_price}"
+                if swap_performed:
+                    response["reason"] = f"Price increased to {current_price} and performed swap ({swap_percentage*100:.0f}%)"
+                else:
+                    response["reason"] = f"Price increased to {current_price} from {buy_trades[0].entry_price}"
                 response["metrics"]["action_taken"] = "Closed positions due to price increase"
                 response["trades"] = [self._trade_to_dict(trade) for trade in new_trades]
                 response["metrics"]["buy_trades"] = []
@@ -922,54 +1332,35 @@ class StraddleService:
                 new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
 
                 swap_performed = False
-                # If price is declining significantly, swap to stablecoin
+                # If price is declining, consider swapping to stablecoin
                 if should_swap_to_stable:
                     logger.info(f"Swapping {symbol} to stablecoin due to downtrend, profit: {sell_profit_pct*100:.2f}%")
 
-                    # Determine swap amount based on trend severity
-                    swap_percentage = 0.5  # Default 50%
-                    if consecutive_same_direction >= 4 or price_volatility >= 0.04:
-                        swap_percentage = 1.0  # Swap 100% in severe downtrends
-
+                    # Calculate amount to swap based on determined percentage
                     swap_amount = quantity * swap_percentage
                     if swap_amount > 0:
-                        swap_result = await swap_service.swap_symbol_stable_coin(symbol, swap_amount, current_price)
+                        # Get the best stablecoin to swap to
+                        stable_coin_data = await binance_helper.get_best_stable_coin()
+                        target_stable = stable_coin_data["best_stable"]
+                        #Done
+                        swap_result = await swap_service.swap_symbol_stable_coin(
+                            symbol,
+                            swap_amount,
+                            current_price,
+                            target_stablecoin=target_stable
+                        )
                         swap_performed = True
 
                         # Update swap status
+                        response["swap_status"]["swap_transaction_id"] = swap_result["transaction"]["transaction_id"]
                         response["swap_status"]["performed"] = True
                         response["swap_status"]["from_coin"] = symbol
-                        response["swap_status"]["to_coin"] = "USDT"  # Assuming stablecoin is USDT
+                        response["swap_status"]["to_coin"] = target_stable
                         response["swap_status"]["amount"] = swap_amount
                         response["swap_status"]["price"] = current_price
+                        response["swap_status"]["percentage"] = swap_percentage * 100
+                        response["swap_status"]["reason"] = "Price decreased with downtrend"
 
-                # If we've started seeing a reversal after swapping to stable, consider swapping back
-                if should_swap_from_stable and consecutive_same_direction >= 3:
-                    # Get available stablecoins
-                    stable_coin_data = await binance_helper.get_best_stable_coin()
-                    stable_coin = stable_coin_data["best_stable"]
-
-                    # Check if we have this stablecoin in portfolio
-                    stable_portfolio = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=stable_coin)
-
-                    if stable_portfolio and stable_portfolio.quantity > 0:
-                        # Calculate amount to swap back - be conservative
-                        swap_back_percentage = 0.3  # Start with 30%
-                        if consecutive_same_direction >= 5:  # Strong reversal
-                            swap_back_percentage = 0.5  # Increase to 50%
-
-                        swap_amount = stable_portfolio.quantity * swap_back_percentage
-                        if swap_amount > 0:
-                            logger.info(f"Swapping back from {stable_coin} to {symbol} due to uptrend reversal")
-                            swap_result = await swap_service.swap_stable_coin_symbol(stable_coin, symbol, swap_amount)
-                            swap_performed = True
-
-                            # Update swap status
-                            response["swap_status"]["performed"] = True
-                            response["swap_status"]["from_coin"] = stable_coin
-                            response["swap_status"]["to_coin"] = symbol
-                            response["swap_status"]["amount"] = swap_amount
-                            response["swap_status"]["price"] = current_price
 
                 # Update response
                 response["status"] = "PROFIT_TAKEN"
@@ -988,21 +1379,112 @@ class StraddleService:
                         response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
                 return response
 
-            logger.info(f"Straddle position already exists for {symbol}, monitoring for opportunities")
-            # Update response
-            response["status"] = "MONITORING"
-            response["trades"] = [self._trade_to_dict(trade) for trade in trades]
+            if (current_price < buy_trades[0].entry_price and current_price > sell_trades[0].entry_price):
+                logger.info(f"Straddle position already exists for {symbol}, monitoring for opportunities")
+                # Separate condition for swapping from stablecoin back to crypto during trends
+                # This runs during the monitoring phase and checks if we should swap back from stablecoin
+                if short_term_price_direction == "up" and (price_direction == "up" or consecutive_same_direction >= 2):
+                    # Get available stablecoins regardless of should_swap_from_stable flag
+                    # This makes it more responsive to new trends
+                    stable_coin_data = await binance_helper.get_best_stable_coin()
+                    available_stables = stable_coin_data["available_stables"]
+
+                    # Find the best stablecoin to swap from based on available quantity
+                    best_stable_to_swap_from = None
+                    largest_amount = 0
+
+                    for stable in available_stables:
+                        # Check if we have this stablecoin in portfolio
+                        stable_portfolio = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=stable)
+
+                        if stable_portfolio and stable_portfolio.quantity > largest_amount:
+                            best_stable_to_swap_from = stable
+                            largest_amount = stable_portfolio.quantity
+
+                    if best_stable_to_swap_from and largest_amount > 0:
+                        # Determine if we should swap based on technical conditions
+                        should_swap_back = False
+                        swap_back_percentage = 0.2  # Default - start conservative
+
+                        # Check for bullish intraday patterns
+                        if intraday_pattern in ["double_bottom", "inverse_head_shoulders"]:
+                            should_swap_back = True
+                            swap_back_percentage = 0.5  # More bullish pattern
+
+                        # Check if we're bouncing off a support level
+                        elif any(abs(current_price - support) / support < 0.02 for support in support_levels):
+                            should_swap_back = True
+                            swap_back_percentage = 0.3
+
+                        # Check volume profile for accumulation
+                        elif volume_profile == "accumulation" and relative_volume > 1.2:
+                            should_swap_back = True
+                            swap_back_percentage += 0.2  # Strong buying pressure
+
+                        # Time of day effect - if historically good time to buy
+                        elif time_of_day_factor > 1.3:
+                            should_swap_back = True
+                            swap_back_percentage += 0.1
+
+                        # Strong uptrend developing - be more aggressive
+                        if consecutive_same_direction >= 3 and price_direction == "up":
+                            should_swap_back = True
+                            swap_back_percentage += 0.2
+
+                        # Check recent price action for rapid upward movement
+                        if len(short_term_prices) >= 5:
+                            recent_change = (short_term_prices[-1] - short_term_prices[-5]) / short_term_prices[-5]
+                            if recent_change > 0.02:  # 2% increase in recent candles
+                                should_swap_back = True
+                                swap_back_percentage += 0.1
+
+                        # Cap the percentage
+                        swap_back_percentage = min(0.7, swap_back_percentage)
+
+                        # Execute swap if conditions are met
+                        if should_swap_back:
+                            swap_amount = largest_amount * swap_back_percentage
+                            if swap_amount > 0:
+                                logger.info(f"Swapping back from {best_stable_to_swap_from} to {symbol} due to detected trend reversal")
+                                swap_result = await swap_service.swap_stable_coin_symbol(
+                                    best_stable_to_swap_from,
+                                    symbol,
+                                    swap_amount
+                                )
+
+                                # Update swap status
+                                response["swap_status"]["performed"] = True
+                                response["swap_status"]["from_coin"] = best_stable_to_swap_from
+                                response["swap_status"]["to_coin"] = symbol
+                                response["swap_status"]["amount"] = swap_amount
+                                response["swap_status"]["price"] = current_price
+                                response["swap_status"]["percentage"] = swap_back_percentage * 100
+                                response["swap_status"]["reason"] = "Detected trend reversal, swapping from stable to crypto"
+                                response["status"] = "SWAP_PERFORMED"
+                                response["reason"] = f"Trend reversal detected, swapped {swap_back_percentage*100:.1f}% from {best_stable_to_swap_from} to {symbol}"
+
+                # Update response for monitoring state
+                if response["status"] != "SWAP_PERFORMED":
+                    response["status"] = "MONITORING"
+                response["trades"] = [self._trade_to_dict(trade) for trade in trades]
 
             # At the end of the function, before returning and after all operations are complete,
-            # update the portfolio summary
+             # New check: Update portfolio with live data regularly
+            # Always update portfolio with live data and market metrics during intraday trading
             try:
-                portfolio_summary = await self.update_portfolio_summary(symbol,update_crypto=False)
+                # Get comprehensive portfolio update with market metrics
+                portfolio_summary = await self.update_portfolio_summary(
+                    symbol,
+                    update_crypto=True,  # Always update with latest crypto data
+                    include_market_metrics=True  # Include detailed market metrics for decision making
+                )
                 # Add portfolio summary to response
                 response["portfolio_summary"] = portfolio_summary
             except Exception as summary_error:
                 logger.error(f"Error updating portfolio summary: {str(summary_error)}")
-                # Don't fail the entire operation if portfolio summary update fails
 
+            # Continue with rest of the function...
+            # We've already updated the portfolio at the beginning, so don't need to do it again
             return response
 
         except Exception as e:

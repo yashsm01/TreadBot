@@ -43,6 +43,100 @@ class BinanceHelper:
             logger.error(f"Error fetching price for {symbol}: {str(e)}")
             raise
 
+    async def get_enhanced_price_data(self, symbol: str) -> Dict[str, Union[str, float, Dict]]:
+        """
+        Get enhanced price data including price, 24h change, volume, and additional metrics
+
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT')
+
+        Returns:
+            Dictionary containing comprehensive price data
+        """
+        try:
+            # Handle stablecoins with fixed price
+            if self.is_stablecoin(symbol):
+                return {
+                    "symbol": symbol,
+                    "price": 1.0,
+                    "price_change_24h": 0.0,
+                    "price_change_percentage_24h": 0.0,
+                    "volume_24h": 0.0,
+                    "high_24h": 1.0,
+                    "low_24h": 1.0,
+                    "market_cap": 0.0,  # Not available for stablecoins
+                    "is_stablecoin": True,
+                    "timestamp": int(time.time() * 1000)
+                }
+
+            # For crypto assets, get comprehensive data
+            formatted_symbol = symbol.replace("/", "")
+
+            # Get ticker data (includes price and 24h stats)
+            ticker = self.client.get_ticker(symbol=formatted_symbol)
+
+            # Get 5-minute data for short-term momentum
+            try:
+                short_term_data = await self.get_5m_stats(symbol)
+                short_term_change = short_term_data.get("price_change_percent", 0.0)
+            except Exception as st_error:
+                logger.warning(f"Could not fetch short-term data for {symbol}: {str(st_error)}")
+                short_term_change = 0.0
+
+            # Estimate market cap if volume is available (rough approximation)
+            # Real market cap would require circulating supply data
+            volume_24h = float(ticker.get("volume", 0.0))
+            current_price = float(ticker.get("lastPrice", 0.0))
+
+            # Calculate volatility from 24h high/low
+            high_24h = float(ticker.get("highPrice", current_price))
+            low_24h = float(ticker.get("lowPrice", current_price))
+            volatility_24h = (high_24h - low_24h) / current_price if current_price > 0 else 0.0
+
+            # Return comprehensive data
+            return {
+                "symbol": symbol,
+                "price": current_price,
+                "bid_price": float(ticker.get("bidPrice", 0.0)),
+                "ask_price": float(ticker.get("askPrice", 0.0)),
+                "price_change_24h": float(ticker.get("priceChange", 0.0)),
+                "price_change_percentage_24h": float(ticker.get("priceChangePercent", 0.0)),
+                "volume_24h": volume_24h,
+                "quote_volume": float(ticker.get("quoteVolume", 0.0)),
+                "high_24h": high_24h,
+                "low_24h": low_24h,
+                "open_24h": float(ticker.get("openPrice", 0.0)),
+                "number_of_trades": int(ticker.get("count", 0)),
+                "short_term_change_percent": short_term_change,
+                "volatility_24h": volatility_24h,
+                "is_stablecoin": False,
+                "timestamp": int(time.time() * 1000)
+            }
+        except BinanceAPIException as e:
+            logger.error(f"Error fetching enhanced price data for {symbol}: {str(e)}")
+            # Return basic price data as fallback
+            try:
+                basic_price = await self.get_price(symbol)
+                return {
+                    "symbol": symbol,
+                    "price": basic_price.get("price", 0.0),
+                    "price_change_percentage_24h": 0.0,
+                    "volume_24h": 0.0,
+                    "is_fallback": True,
+                    "error": str(e),
+                    "timestamp": int(time.time() * 1000)
+                }
+            except Exception as fallback_error:
+                logger.error(f"Fallback error for {symbol}: {str(fallback_error)}")
+                return {
+                    "symbol": symbol,
+                    "price": 0.0,
+                    "price_change_percentage_24h": 0.0,
+                    "volume_24h": 0.0,
+                    "error": f"{str(e)} (fallback failed: {str(fallback_error)})",
+                    "timestamp": int(time.time() * 1000)
+                }
+
     # Get current prices for multiple trading pairs
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, Dict[str, Union[float, int]]]:
         """
@@ -72,6 +166,88 @@ class BinanceHelper:
         except BinanceAPIException as e:
             logger.error(f"Error fetching prices: {str(e)}")
             raise
+
+    async def get_multiple_enhanced_prices(self, symbols: List[str]) -> Dict[str, Dict[str, Union[float, Dict]]]:
+        """
+        Get enhanced price data for multiple trading pairs in a single call
+
+        Args:
+            symbols: List of trading pair symbols (e.g., ['BTCUSDT', 'ETHUSDT'])
+
+        Returns:
+            Dictionary mapping symbols to their enhanced price data
+        """
+        try:
+            # Get all tickers in one API call
+            tickers = self.client.get_ticker()
+            ticker_map = {t['symbol']: t for t in tickers}
+
+            # Prepare results
+            results = {}
+            current_time = int(time.time() * 1000)
+
+            for symbol in symbols:
+                try:
+                    # Handle stablecoins
+                    if self.is_stablecoin(symbol):
+                        results[symbol] = {
+                            "symbol": symbol,
+                            "price": 1.0,
+                            "price_change_24h": 0.0,
+                            "price_change_percentage_24h": 0.0,
+                            "volume_24h": 0.0,
+                            "high_24h": 1.0,
+                            "low_24h": 1.0,
+                            "is_stablecoin": True,
+                            "timestamp": current_time
+                        }
+                        continue
+
+                    # For regular crypto assets
+                    formatted_symbol = symbol.replace("/", "")
+                    ticker = ticker_map.get(formatted_symbol)
+
+                    if not ticker:
+                        logger.warning(f"No ticker data found for {symbol}")
+                        results[symbol] = {
+                            "symbol": symbol,
+                            "price": 0.0,
+                            "error": "No ticker data found",
+                            "timestamp": current_time
+                        }
+                        continue
+
+                    current_price = float(ticker.get("lastPrice", 0.0))
+                    high_24h = float(ticker.get("highPrice", current_price))
+                    low_24h = float(ticker.get("lowPrice", current_price))
+                    volatility_24h = (high_24h - low_24h) / current_price if current_price > 0 else 0.0
+
+                    results[symbol] = {
+                        "symbol": symbol,
+                        "price": current_price,
+                        "price_change_24h": float(ticker.get("priceChange", 0.0)),
+                        "price_change_percentage_24h": float(ticker.get("priceChangePercent", 0.0)),
+                        "volume_24h": float(ticker.get("volume", 0.0)),
+                        "high_24h": high_24h,
+                        "low_24h": low_24h,
+                        "volatility_24h": volatility_24h,
+                        "is_stablecoin": False,
+                        "timestamp": current_time
+                    }
+                except Exception as symbol_error:
+                    logger.error(f"Error processing {symbol}: {str(symbol_error)}")
+                    results[symbol] = {
+                        "symbol": symbol,
+                        "price": 0.0,
+                        "error": str(symbol_error),
+                        "timestamp": current_time
+                    }
+
+            return results
+        except BinanceAPIException as e:
+            logger.error(f"Error fetching multiple enhanced prices: {str(e)}")
+            return {symbol: {"symbol": symbol, "price": 0.0, "error": str(e), "timestamp": int(time.time() * 1000)}
+                    for symbol in symbols}
 
     # Get 24-hour price statistics for a symbol
     async def get_24h_stats(self, symbol: str) -> Dict[str, Union[str, float]]:
@@ -323,7 +499,7 @@ class BinanceHelper:
             raise BinanceAPIException(f"Error processing price history: {str(e)}")
 
     #get the best stable coin to buy from the binance array from live market
-    async def get_best_stable_coin(self) -> Dict[str, Union[str, Dict]]:
+    async def get_best_stable_coin(self) -> Dict[str, Union[str, Dict, List]]:
         """
         Get the best stablecoin by analyzing market data and return detailed information
 
@@ -367,6 +543,7 @@ class BinanceHelper:
                 logger.warning("No stablecoin data available, defaulting to USDT")
                 return {
                     "best_stable": "USDT",
+                    "available_stables": ["USDT"],
                     "reason": "No stablecoin data available",
                     "all_stables": {}
                 }
@@ -374,10 +551,14 @@ class BinanceHelper:
             # Rank stablecoins by volume (higher is better)
             best_stable = max(stats.items(), key=lambda x: x[1]["volume"])[0]
 
+            # List of available stables (all that we have stats for)
+            available_stables = list(stats.keys())
+
             logger.info(f"Selected {best_stable} as the best stablecoin based on volume")
 
             return {
                 "best_stable": best_stable,
+                "available_stables": available_stables,
                 "reason": "Highest trading volume",
                 "best_metrics": stats[best_stable],
                 "all_stables": stats,
@@ -389,10 +570,50 @@ class BinanceHelper:
             # Default to USDT in case of errors
             return {
                 "best_stable": "USDT",
+                "available_stables": ["USDT"],
                 "reason": f"Error: {str(e)}",
                 "all_stables": {},
                 "timestamp": int(datetime.utcnow().timestamp() * 1000)
             }
+
+    async def get_stablecoin_balances(self, portfolio_data: Dict) -> Dict[str, Dict]:
+        """
+        Analyze portfolio data to find stablecoin balances
+
+        Args:
+            portfolio_data: Dictionary of portfolio data containing assets
+
+        Returns:
+            Dictionary mapping stablecoin symbols to their balance information
+        """
+        stablecoin_balances = {}
+
+        try:
+            # All supported stablecoins
+            all_stablecoins = settings.STABLE_COINS
+
+            # Extract stablecoin balances from portfolio
+            for symbol, asset_data in portfolio_data.items():
+                if symbol in all_stablecoins or asset_data.get("asset_type") == "STABLE":
+                    stablecoin_balances[symbol] = {
+                        "symbol": symbol,
+                        "quantity": asset_data.get("quantity", 0.0),
+                        "value": asset_data.get("value", 0.0),
+                        "timestamp": int(time.time() * 1000)
+                    }
+
+            # Return data sorted by value (largest first)
+            sorted_balances = {k: v for k, v in sorted(
+                stablecoin_balances.items(),
+                key=lambda item: item[1].get("value", 0.0),
+                reverse=True
+            )}
+
+            return sorted_balances
+
+        except Exception as e:
+            logger.error(f"Error getting stablecoin balances: {str(e)}")
+            return stablecoin_balances
 
     # Helper function to format timestamp
     def _format_timestamp(self, timestamp_ms: int) -> str:
