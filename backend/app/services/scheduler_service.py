@@ -157,10 +157,10 @@ class SchedulerService:
                 logger.debug("Hoverly schedule disabled, skipping")
                 return
 
-            await self._analyze_market()
-            await self._update_portfolio()
-            await self._send_daily_summary()
-            await self._check_risk_limits()
+            # await self._analyze_market()
+            # await self._update_portfolio()
+            # await self._send_daily_summary()
+            # await self._check_risk_limits()
         except Exception as e:
             logger.error(f"Error in hoverly schedule: {str(e)}")
             raise

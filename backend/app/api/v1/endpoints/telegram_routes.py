@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict
-from ....core.database import get_db
-from ....services.telegram_service import telegram_service
+from app.core.database import get_db
+from app.services.telegram_service import telegram_service
 
 router = APIRouter()
 

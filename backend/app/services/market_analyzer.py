@@ -3,9 +3,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import platform
 import asyncio
-from ..core.logger import logger
-from ..core.config import settings
-from ..core.exchange.exchange_manager import exchange_manager
+from app.core.logger import logger
+from app.core.config import settings
+from app.core.exchange.exchange_manager import exchange_manager
 import numpy as np
 
 # Set event loop policy for Windows
@@ -132,7 +132,7 @@ class MarketAnalyzer:
     ) -> pd.DataFrame:
         """Get historical price data"""
         try:
-            from ..services.helper.binance_helper import binance_helper
+            from app.services.helper.binance_helper import binance_helper
 
             # Check if this is a stablecoin symbol - skip API call and return synthetic data
             if binance_helper.is_stablecoin(symbol):

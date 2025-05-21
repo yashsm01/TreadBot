@@ -18,3 +18,4 @@ class SwapTransaction(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     status = Column(String, nullable=False)  # "completed", "failed", "pending"
     user_id = Column(Integer, nullable=False, default=1)
+    position_id = Column(Integer, nullable=False)

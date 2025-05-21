@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     BINANCE_API_KEY: str = ""  # Add your API key here
     BINANCE_SECRET_KEY: str = ""  # Add your secret key here
 
+    # 1inch API Key
+    ONEINCH_API_KEY: str = "5udQ29Up3xGdnF4LNA2EDLm3QjKovqD3"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

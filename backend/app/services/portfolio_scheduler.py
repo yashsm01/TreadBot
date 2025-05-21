@@ -31,22 +31,6 @@ class PortfolioSchedulerService:
         logger.info(f"Starting portfolio summary scheduler for symbols: {self.symbols}")
 
 
-        # Add additional logging for other intervals
-        self.scheduler.add_job(
-            self.log_summary_interval,
-            IntervalTrigger(minutes=5),
-            id="portfolio_summary_5min",
-            replace_existing=True,
-            args=["5-minute"]
-        )
-
-        self.scheduler.add_job(
-            self.log_summary_interval,
-            IntervalTrigger(minutes=15),
-            id="portfolio_summary_15min",
-            replace_existing=True,
-            args=["15-minute"]
-        )
 
         self.scheduler.add_job(
             self.log_summary_interval,

@@ -10,7 +10,6 @@ from .services.telegram_service import create_telegram_service, telegram_service
 from .services.crypto_service import crypto_service
 from .services.scheduler_service import scheduler_service
 from .services.portfolio_service import portfolio_service
-from .services.portfolio_scheduler import portfolio_scheduler
 from .core.exchange.exchange_manager import exchange_manager
 
 # Import all models to ensure they are registered with Base
@@ -98,13 +97,6 @@ async def startup_event():
                 logger.info("Starting scheduler...")
                 await scheduler_service.start()
 
-                # Start portfolio summary scheduler
-                logger.info("Starting portfolio summary scheduler...")
-                # Get symbols from settings
-                symbols = getattr(settings, "TRADING_SYMBOLS", ["BTCUSDT"])
-                await portfolio_scheduler.start(symbols)
-                logger.info(f"Portfolio summary scheduler started for symbols: {symbols}")
-
             logger.info("Application startup completed successfully")
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
@@ -120,11 +112,6 @@ async def shutdown_event():
         logger.info("Stopping scheduler...")
         await scheduler_service.stop()
         logger.info("Scheduler stopped successfully")
-
-        # Stop portfolio summary scheduler
-        logger.info("Stopping portfolio summary scheduler...")
-        await portfolio_scheduler.stop()
-        logger.info("Portfolio summary scheduler stopped")
 
         # Stop Telegram bot
         logger.info("Stopping Telegram bot...")
@@ -150,7 +137,6 @@ async def health_check():
         "version": settings.PROJECT_VERSION,
         "telegram_bot": telegram_service._initialized,
         "scheduler": scheduler_service.scheduler.running,
-        "portfolio_scheduler": portfolio_scheduler.is_running,
         "exchange": exchange_manager._initialized
     }
 

@@ -6,9 +6,20 @@ celery -A crypto_scheduler.app worker --loglevel=info
 cd backend
 celery -A crypto_scheduler.app beat --loglevel=info
 
+#if you run from normal cmd
+D:
+cd "D:\Crypto\Time-Based Straddling Strategy"
+venv\Scripts\activate
+
 #start main server
 uvicorn app.main:app --reload
 
+#bat file ######################
+@echo off
+cd /d "D:\Crypto\Time-Based Straddling Strategy"
+call venv\Scripts\activate
+uvicorn app.main:app --reload
+###############################
 
 alembic current
 alembic history

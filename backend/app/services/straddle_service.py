@@ -898,6 +898,8 @@ class StraddleService:
         }
 
         try:
+            #set the db for swap service
+            swap_service.db = self. db
             # Set the processing lock
             StraddleService._processing_locks[lock_key] = True
 
@@ -1292,7 +1294,8 @@ class StraddleService:
                             symbol,
                             swap_amount,
                             current_price,
-                            target_stablecoin=target_stable
+                            target_stablecoin=target_stable,
+                            position_id=position_id
                         )
                         swap_performed = True
 
@@ -1307,6 +1310,9 @@ class StraddleService:
                         response["swap_status"]["reason"] = "Price increased with uptrend"
 
                 # Update response
+                # Refresh each trade individually
+                for trade in new_trades:
+                    await self.db.refresh(trade)
                 response["status"] = "PROFIT_TAKEN"
                 if swap_performed:
                     response["reason"] = f"Price increased to {current_price} and performed swap ({swap_percentage*100:.0f}%)"
@@ -1347,7 +1353,8 @@ class StraddleService:
                             symbol,
                             swap_amount,
                             current_price,
-                            target_stablecoin=target_stable
+                            target_stablecoin=target_stable,
+                            position_id=position_id
                         )
                         swap_performed = True
 
@@ -1363,6 +1370,9 @@ class StraddleService:
 
 
                 # Update response
+                # Refresh each trade individually
+                for trade in new_trades:
+                    await self.db.refresh(trade)
                 response["status"] = "PROFIT_TAKEN"
                 if swap_performed:
                     response["reason"] = f"Price decreased to {current_price} and performed swap"
@@ -1449,7 +1459,8 @@ class StraddleService:
                                 swap_result = await swap_service.swap_stable_coin_symbol(
                                     best_stable_to_swap_from,
                                     symbol,
-                                    swap_amount
+                                    swap_amount,
+                                    position_id=position_id
                                 )
 
                                 # Update swap status
@@ -1466,6 +1477,9 @@ class StraddleService:
                 # Update response for monitoring state
                 if response["status"] != "SWAP_PERFORMED":
                     response["status"] = "MONITORING"
+                # Refresh each trade individually instead of trying to refresh the list
+                for trade in trades:
+                    await self.db.refresh(trade)
                 response["trades"] = [self._trade_to_dict(trade) for trade in trades]
 
             # At the end of the function, before returning and after all operations are complete,
@@ -1488,6 +1502,7 @@ class StraddleService:
             return response
 
         except Exception as e:
+
             logger.error(f"Error in auto_buy_sell_straddle_inprogress: {str(e)}")
             # Update response with error information
             response["status"] = "ERROR"

@@ -14,11 +14,14 @@ from app.models.portfolio import Portfolio  # Add import for direct database mod
 from app.models.swap_transaction import SwapTransaction  # Add import for swap transaction model
 from app.crud.curd_crypto import insert_crypto_data_live
 
+#middleware
+from app.middleware.one_inch_token_handler import one_inch_client
+
 class SwapService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def swap_symbol_stable_coin(self, symbol: str, quantity: float, current_price: float, target_stablecoin: str = "USDT") -> Dict[str, Any]:
+    async def swap_symbol_stable_coin(self, symbol: str, quantity: float, current_price: float, target_stablecoin: str = "USDT", position_id: int = None) -> Dict[str, Any]:
         """
         Swap a cryptocurrency for the best available stablecoin
 
@@ -142,7 +145,8 @@ class SwapService:
                 fee_amount=fee_amount,
                 timestamp=datetime.utcnow(),  # Use a fresh datetime
                 status="completed",
-                user_id=1  # Default user_id
+                user_id=1,
+                position_id=position_id
             )
 
             # Add, commit and refresh directly
@@ -166,6 +170,7 @@ class SwapService:
 
             logger.info(f"Swap transaction stored in database: {transaction_details}")
 
+
             return {
                 "status": "success",
                 "message": f"Successfully swapped {quantity} {symbol} for {stable_amount} {stable_coin}",
@@ -181,7 +186,7 @@ class SwapService:
                 "error_details": str(e)
             }
 
-    async def swap_stable_coin_symbol(self, stable_coin: str, symbol: str, amount: float, target_stablecoin: str = "USDT") -> Dict[str, Any]:
+    async def swap_stable_coin_symbol(self, stable_coin: str, symbol: str, amount: float, target_stablecoin: str = "USDT", position_id: int = None) -> Dict[str, Any]:
         """
         Swap from stablecoin to cryptocurrency
 
@@ -303,7 +308,8 @@ class SwapService:
                 fee_amount=fee_amount,
                 timestamp=datetime.utcnow(),  # Use a fresh datetime
                 status="completed",
-                user_id=1  # Default user_id
+                user_id=1,
+                position_id=position_id
             )
 
             # Add, commit and refresh directly
@@ -311,6 +317,7 @@ class SwapService:
             await self.db.commit()
             await self.db.refresh(swap_transaction_db)
 
+            result = await insert_crypto_data_live(self.db, symbol,swap_transaction_id=transaction_id)
             # Create transaction details for logging
             transaction_details = {
                 "transaction_id": transaction_id,
@@ -340,5 +347,19 @@ class SwapService:
                 "error_details": str(e)
             }
 
+    async def get_token():
+        try:
+             # Get Ethereum (chain ID 1) tokens
+            tokens = await one_inch_client.get("/swap/v5.2/1/tokens")
+            print(f"Found {len(tokens.get('tokens', {}))} tokens on Ethereum")
+
+            # Print the first 3 tokens for example
+            for i, (token_address, token_info) in enumerate(list(tokens.get('tokens', {}).items())[:3]):
+                print(f"Token {i+1}: {token_info.get('symbol')} - {token_info.get('name')}")
+
+            return tokens
+        except Exception as e:
+            logger.error(f"Error getting tokens: {e}")
+            return {"status": "error", "message": f"Error getting tokens: {str(e)}"}
 swap_service = SwapService(None)
 

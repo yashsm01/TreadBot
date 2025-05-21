@@ -7,7 +7,8 @@ from app.api.v1.endpoints import (
     crypto_routes,
     straddle_routes,
     swap_transaction_routes,
-    portfolio_summary_routes
+    portfolio_summary_routes,
+    one_inch_routes
 )
 
 api_router = APIRouter()
@@ -63,4 +64,11 @@ api_router.include_router(
     portfolio_summary_routes.router,
     prefix="/portfolio-summary",
     tags=["portfolio-summary"]
+)
+
+# Include 1inch API endpoints
+api_router.include_router(
+    one_inch_routes.router,
+    prefix="/one-inch",
+    tags=["one-inch"]
 )

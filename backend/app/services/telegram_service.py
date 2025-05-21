@@ -11,10 +11,10 @@ from telegram.ext import (
 )
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..core.config import settings
-from ..models.telegram import TelegramUser, TelegramNotification
-from ..crud.crud_telegram import telegram_user as user_crud
-from ..crud.crud_telegram import telegram_notification as notification_crud
+from app.core.config import settings
+from app.models.telegram import TelegramUser, TelegramNotification
+from app.crud.crud_telegram import telegram_user as user_crud
+from app.crud.crud_telegram import telegram_notification as notification_crud
 
 
   # Import services here to avoid circular imports

@@ -3,9 +3,9 @@ import logging
 from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
-from ...services.crypto_service import crypto_service
-from ...core.config import settings
-from ...core.logger import logger
+from app.services.crypto_service import crypto_service
+from app.core.config import settings
+from app.core.logger import logger
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
