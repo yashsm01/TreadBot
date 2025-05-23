@@ -8,7 +8,8 @@ from app.api.v1.endpoints import (
     straddle_routes,
     swap_transaction_routes,
     portfolio_summary_routes,
-    one_inch_routes
+    one_inch_routes,
+    profit_routes
 )
 
 api_router = APIRouter()
@@ -71,4 +72,11 @@ api_router.include_router(
     one_inch_routes.router,
     prefix="/one-inch",
     tags=["one-inch"]
+)
+
+# Include profit calculation endpoints
+api_router.include_router(
+    profit_routes.router,
+    prefix="/profit",
+    tags=["profit"]
 )

@@ -2,6 +2,7 @@ from typing import Optional
 from datetime import datetime
 from app.core.logger import logger
 import asyncio
+import re
 
 class NotificationService:
     def __init__(self):
@@ -11,6 +12,13 @@ class NotificationService:
     def set_db(self, db):
         """Set the database session"""
         self.db = db
+
+    def _escape_markdown(self, text):
+        """Escape special Markdown characters to prevent parsing errors"""
+        if not text:
+            return ""
+        # Escape special Markdown characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
+        return re.sub(r'([_*\[\]()~`>#\+\-=|{}.!])', r'\\\1', str(text))
 
     async def _get_telegram_service(self):
         """Lazy-load the telegram_service to avoid circular imports"""
@@ -160,6 +168,10 @@ class NotificationService:
                 symbol = trading_status.get('symbol', 'Unknown')
                 status = trading_status.get('status', 'UNKNOWN')
 
+                # Escape Markdown special characters
+                symbol_escaped = self._escape_markdown(symbol)
+                status_escaped = self._escape_markdown(status)
+
                 # Get metrics
                 metrics = trading_status.get('metrics', {})
                 current_price = metrics.get('current_price', 0)
@@ -172,6 +184,9 @@ class NotificationService:
                 trend_direction = metrics.get('trend_direction', 'neutral')
                 trend_strength = metrics.get('trend_strength', 0)
                 volatility = metrics.get('volatility', 0)
+
+                # Escape trend direction
+                trend_direction_escaped = self._escape_markdown(trend_direction)
 
                 # Get swap status
                 swap = trading_status.get('swap_status', {})
@@ -192,13 +207,14 @@ class NotificationService:
 
                 # Format the message with Markdown
                 message = (
-                    f"{status_emoji} *Straddle Status Update for {symbol}*\n\n"
-                    f"*Status:* {status}\n"
+                    f"{status_emoji} *Straddle Status Update for {symbol_escaped}*\n\n"
+                    f"*Status:* {status_escaped}\n"
                 )
 
                 # Add reason if present
                 if trading_status.get('reason'):
-                    message += f"*Reason:* {trading_status['reason']}\n"
+                    reason_escaped = self._escape_markdown(trading_status['reason'])
+                    message += f"*Reason:* {reason_escaped}\n"
 
                 # Add portfolio summary info if available
                 if has_portfolio_summary and status not in ["ERROR"]:
@@ -240,17 +256,19 @@ class NotificationService:
                     if trend_direction:
                         message += (
                             f"\n*Market Trend:*\n"
-                            f"Direction: {trend_emoji} {trend_direction.upper()}\n"
+                            f"Direction: {trend_emoji} {trend_direction_escaped.upper()}\n"
                             f"Strength: {'🔥' if trend_strength >= 3 else '✨' if trend_strength >= 2 else '🌱' if trend_strength >= 1 else '💤'} {trend_strength}/5\n"
                             f"Volatility: {'🌋' if volatility >= 0.03 else '🌊' if volatility >= 0.015 else '🌱'} {volatility:.2%}\n"
                         )
 
                     # Add swap info if a swap was performed
                     if swap_performed:
+                        from_coin_escaped = self._escape_markdown(swap.get('from_coin', ''))
+                        to_coin_escaped = self._escape_markdown(swap.get('to_coin', ''))
                         message += (
                             f"\n*Swap Performed:*\n"
-                            f"From: {swap.get('from_coin', '')}\n"
-                            f"To: {swap.get('to_coin', '')}\n"
+                            f"From: {from_coin_escaped}\n"
+                            f"To: {to_coin_escaped}\n"
                             f"Amount: {swap.get('amount', 0):,.6f}\n"
                             f"Price: ${swap.get('price', 0):,.2f}\n"
                         )

@@ -37,15 +37,32 @@ class Settings(BaseSettings):
     STABLE_COINS: List[str] = ["USDT", "USDC", "BUSD", "DAI", "TUSD"]
 
     # Trading settings
-    DEFAULT_TP_PCT: float = 0.8  # 2% take profit
-    DEFAULT_SL_PCT: float = 0.3  # 1% stop loss
+    STRATEGY: str = "SHORT" # LONG, MEDIUM, SHORT
+    @property
+    def DEFAULT_TP_PCT(self) -> float:
+        STRATEGY_VALUE = {
+            "LONG": 6.0,
+            "MEDIUM": 3.0,
+            "SHORT": 0.8
+        }
+        return STRATEGY_VALUE[self.STRATEGY]
+
+    @property
+    def DEFAULT_SL_PCT(self) -> float:
+        STRATEGY_VALUE = {
+            "LONG": 4.0,
+            "MEDIUM": 2.0,
+            "SHORT": 0.5
+        }
+        return STRATEGY_VALUE[self.STRATEGY]
+
     DEFAULT_INTERVAL: str = "5m"
     DEFAULT_BREAKOUT_PCT: float = 0.5
     DEFAULT_QUANTITY: float = 0.001
 
     # 5m_LIMIT
-    TREADING_DEFAULT_LIMIT: int = 20
-    TREADING_DEFAULT_INTERVAL: str = "5m"
+    TREADING_DEFAULT_LIMIT: int = 24
+    TREADING_DEFAULT_INTERVAL: str = "1h"
 
     # Telegram Settings
     TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "7816751552:AAEdH_pquW9QFyr_OghH3RxkDqtOTBT3LsQ")

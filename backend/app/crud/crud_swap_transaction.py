@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from datetime import datetime, timedelta
 from app.models.swap_transaction import SwapTransaction
 from app.crud.base import CRUDBase
@@ -79,5 +79,53 @@ class CRUDSwapTransaction(CRUDBase[SwapTransaction, SwapTransactionCreate, SwapT
             .where(SwapTransaction.timestamp >= since)
         )
         return result.scalar_one()
+
+    async def get_by_date_range(
+        self,
+        db: AsyncSession,
+        *,
+        start_date: datetime,
+        end_date: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 100
+    ) -> List[SwapTransaction]:
+        """Get swap transactions within a date range"""
+        if end_date is None:
+            end_date = datetime.now()
+
+        stmt = select(SwapTransaction).where(
+            and_(
+                SwapTransaction.timestamp >= start_date,
+                SwapTransaction.timestamp <= end_date
+            )
+        )
+
+        if symbol:
+            stmt = stmt.where(
+                or_(
+                    SwapTransaction.from_symbol == symbol,
+                    SwapTransaction.to_symbol == symbol
+                )
+            )
+
+        stmt = stmt.order_by(SwapTransaction.timestamp.desc()).offset(skip).limit(limit)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_position(
+        self,
+        db: AsyncSession,
+        *,
+        position_id: int,
+        skip: int = 0,
+        limit: int = 100
+    ) -> List[SwapTransaction]:
+        """Get swap transactions for a specific position"""
+        stmt = select(SwapTransaction).where(
+            SwapTransaction.position_id == position_id
+        ).order_by(SwapTransaction.timestamp.desc()).offset(skip).limit(limit)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
 swap_transaction_crud = CRUDSwapTransaction(SwapTransaction)

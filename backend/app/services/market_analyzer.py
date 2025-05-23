@@ -197,19 +197,41 @@ class MarketAnalyzer:
 
                 return df
             else:
-                # Fall back to exchange_manager for other intervals
-                ohlcv = await exchange_manager.get_ohlcv(symbol, timeframe=interval, limit=limit)
-                if not ohlcv:
-                    raise Exception(f"Could not get OHLCV data for {symbol}")
+                # Calculate intervals based on limit
+                intervals = min(50, max(5, limit))  # Cap between 5 and 50 intervals
 
-                df = pd.DataFrame(ohlcv, columns=[
-                    'timestamp', 'open', 'high', 'low', 'close', 'volume'
-                ])
+                # Get price history from binance helper
+                price_history = await binance_helper.get_dynamic_price_history(symbol, interval=interval, intervals=intervals)
+
+                if not price_history or not price_history.get('data') or not price_history['data'].get('history'):
+                    raise Exception(f"Could not get price history data for {symbol}")
+
+                # Convert to DataFrame
+                history_data = price_history['data']['history']
+                df = pd.DataFrame(history_data)
+
+                # Rename columns to match OHLCV format
+                df = df.rename(columns={'timestamp': 'timestamp'})
 
                 # Convert timestamp to datetime
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
                 return df
+
+            # else:
+            #     # Fall back to exchange_manager for other intervals
+            #     ohlcv = await exchange_manager.get_ohlcv(symbol, timeframe=interval, limit=limit)
+            #     if not ohlcv:
+            #         raise Exception(f"Could not get OHLCV data for {symbol}")
+
+            #     df = pd.DataFrame(ohlcv, columns=[
+            #         'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            #     ])
+
+            #     # Convert timestamp to datetime
+            #     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+            #     return df
         except Exception as e:
             logger.error(f"Error fetching price data: {str(e)}")
             raise

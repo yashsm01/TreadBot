@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
+import math
 from app.core.logger import logger
 from app.core.config import settings
 from app.models.trade import Trade
@@ -61,6 +62,29 @@ class StraddleStrategy:
             stop_loss = entry_price + sl_amount
 
         return take_profit, stop_loss
+
+    def is_good_buy_entry(self, price_direction, short_term_changes, relative_volume, price, support_levels, resistance_levels):
+        # 1. Momentum Check
+        # Add additional buying conditions using log returns:
+        # Positive momentum in recent log returns
+        positive_momentum = np.sum(short_term_changes[-5:]) > 0
+
+        # 2. Increasing trading volume spike
+        volume_confirms = relative_volume > 1.1
+
+        # 3.  Current price is above a key support level
+        near_support = any(price > s for s in support_levels)
+
+        # 4. Resistance Safe: Not approaching immediate resistance
+        not_near_resistance = all(price < r * 0.95 for r in resistance_levels)
+
+        return (
+            price_direction == "up" and
+            positive_momentum and
+            volume_confirms and
+            near_support and
+            not_near_resistance
+        )
 class StraddleService:
     # Make straddle_status a class variable so it's shared across all instances
     straddle_status = True
@@ -959,9 +983,10 @@ class StraddleService:
             short_term_prices = short_term_data['close'].tolist()
             short_term_volumes = short_term_data['volume'].tolist()
 
-            # Calculate intraday price changes
-            price_changes = np.diff(recent_prices) if len(recent_prices) > 1 else []
-            short_term_changes = np.diff(short_term_prices) if len(short_term_prices) > 1 else []
+            # Calculate intraday price changes using log returns instead of simple returns
+            # Log returns are more accurate for compounding and large price movements
+            price_changes = np.diff(np.log(recent_prices)) if len(recent_prices) > 1 else []
+            short_term_changes = np.diff(np.log(short_term_prices)) if len(short_term_prices) > 1 else []
 
             # Enhanced market analysis for intraday trading
             # Identify key support and resistance levels
@@ -1121,18 +1146,19 @@ class StraddleService:
             # Update response with volatility
             response["metrics"]["volatility"] = price_volatility
 
-            # Calculate potential profit percentages with safety checks
+            # Calculate potential profit percentages with safety checks using log returns
             try:
-                buy_profit_pct = (current_price - buy_trades[0].entry_price) / buy_trades[0].entry_price if buy_trades[0].entry_price > 0 else 0
-                sell_profit_pct = (sell_trades[0].entry_price - current_price) / sell_trades[0].entry_price if sell_trades[0].entry_price > 0 else 0
+                # Log returns for more accurate profit percentage calculation
+                buy_profit_pct = math.log(current_price / buy_trades[0].entry_price) if buy_trades[0].entry_price > 0 else 0
+                sell_profit_pct = math.log(sell_trades[0].entry_price / current_price) if sell_trades[0].entry_price > 0 and current_price > 0 else 0
 
-                # Update profit/loss metrics
+                # Update profit/loss metrics using log returns
                 if current_price > open_positions.average_entry_price:
                     profit_loss = (current_price - open_positions.average_entry_price) * quantity
-                    profit_loss_pct = (current_price - open_positions.average_entry_price) / open_positions.average_entry_price * 100
+                    profit_loss_pct = math.log(current_price / open_positions.average_entry_price) * 100
                 else:
                     profit_loss = (open_positions.average_entry_price - current_price) * quantity * -1
-                    profit_loss_pct = (open_positions.average_entry_price - current_price) / open_positions.average_entry_price * -100
+                    profit_loss_pct = math.log(current_price / open_positions.average_entry_price) * 100
 
                 response["metrics"]["profit_loss"] = profit_loss
                 response["metrics"]["profit_loss_percent"] = profit_loss_pct
@@ -1282,7 +1308,7 @@ class StraddleService:
                 should_swap_to_stable = False
                 if should_swap_to_stable:
                     logger.info(f"Swapping {symbol} to stablecoin due to price increase, profit: {buy_profit_pct*100:.2f}%")
-
+                    swap_percentage = 1
                     # Calculate amount to swap based on determined percentage
                     swap_amount = quantity * swap_percentage
                     if swap_amount > 0:
@@ -1341,7 +1367,7 @@ class StraddleService:
                 # If price is declining, consider swapping to stablecoin
                 if should_swap_to_stable:
                     logger.info(f"Swapping {symbol} to stablecoin due to downtrend, profit: {sell_profit_pct*100:.2f}%")
-
+                    swap_percentage = 1
                     # Calculate amount to swap based on determined percentage
                     swap_amount = quantity * swap_percentage
                     if swap_amount > 0:
@@ -1393,7 +1419,15 @@ class StraddleService:
                 logger.info(f"Straddle position already exists for {symbol}, monitoring for opportunities")
                 # Separate condition for swapping from stablecoin back to crypto during trends
                 # This runs during the monitoring phase and checks if we should swap back from stablecoin
-                if short_term_price_direction == "up" and (price_direction == "up" or consecutive_same_direction >= 2):
+                if short_term_price_direction == "up" and (price_direction == "up" or consecutive_same_direction >= 2) and \
+                    self.strategy.is_good_buy_entry(
+                        price_direction,
+                        short_term_changes,
+                        relative_volume,
+                        current_price,
+                        support_levels,
+                        resistance_levels
+                    ):
                     # Get available stablecoins regardless of should_swap_from_stable flag
                     # This makes it more responsive to new trends
                     stable_coin_data = await binance_helper.get_best_stable_coin()
@@ -1453,6 +1487,7 @@ class StraddleService:
 
                         # Execute swap if conditions are met
                         if should_swap_back:
+                            swap_back_percentage = 1
                             swap_amount = largest_amount * swap_back_percentage
                             if swap_amount > 0:
                                 logger.info(f"Swapping back from {best_stable_to_swap_from} to {symbol} due to detected trend reversal")

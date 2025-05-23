@@ -146,7 +146,8 @@ class SwapService:
                 timestamp=datetime.utcnow(),  # Use a fresh datetime
                 status="completed",
                 user_id=1,
-                position_id=position_id
+                position_id=position_id,
+                to_stable=True
             )
 
             # Add, commit and refresh directly
@@ -309,7 +310,8 @@ class SwapService:
                 timestamp=datetime.utcnow(),  # Use a fresh datetime
                 status="completed",
                 user_id=1,
-                position_id=position_id
+                position_id=position_id,
+                to_stable=False
             )
 
             # Add, commit and refresh directly

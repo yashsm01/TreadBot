@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, func
+from sqlalchemy import Column, Integer, String, Float, DateTime, func, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -19,3 +19,4 @@ class SwapTransaction(Base):
     status = Column(String, nullable=False)  # "completed", "failed", "pending"
     user_id = Column(Integer, nullable=False, default=1)
     position_id = Column(Integer, nullable=False)
+    to_stable = Column(Boolean, nullable=False, default=False)
