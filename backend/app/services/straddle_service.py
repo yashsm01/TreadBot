@@ -140,6 +140,24 @@ class StraddleService:
                                    position_id: int) -> List[Trade]:
         """Create a pair of straddle trades based on current market conditions"""
         try:
+            # Validate inputs
+            if quantity <= 0:
+                raise ValueError(f"Invalid quantity {quantity} for {symbol}. Quantity must be greater than 0.")
+
+            if current_price <= 0:
+                raise ValueError(f"Invalid current price {current_price} for {symbol}. Price must be greater than 0.")
+
+            if position_id is None or position_id <= 0:
+                raise ValueError(f"Invalid position_id {position_id} for {symbol}. Position ID must be provided and greater than 0.")
+
+            # Validate if quantity is sufficient for trading
+            if not self.validate_trade_quantity(symbol, quantity, current_price):
+                min_quantity = self.get_minimum_trade_quantity(symbol, current_price)
+                trade_value = quantity * current_price
+                raise ValueError(f"Quantity {quantity} insufficient for {symbol}. "
+                               f"Minimum quantity: {min_quantity}, minimum trade value: $10.00. "
+                               f"Current trade value: ${trade_value:.2f}")
+
             buy_entry, sell_entry = self.strategy.calculate_entry_levels(current_price)
 
             # Create buy stop order
@@ -186,9 +204,12 @@ class StraddleService:
                 quantity=quantity
             )
 
-            logger.info(f"Created straddle trades for {symbol} at {current_price}")
+            logger.info(f"Created straddle trades for {symbol} at {current_price} with quantity {quantity}")
             return [long_trade_db, short_trade_db]
 
+        except ValueError as ve:
+            logger.error(f"Validation error creating straddle trades: {str(ve)}")
+            raise
         except Exception as e:
             logger.error(f"Error creating straddle trades: {str(e)}")
             raise
@@ -381,7 +402,13 @@ class StraddleService:
 
             #get quentity from portfolio
             protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
-            quantity = protfolo_details.quantity
+
+            # Handle case where portfolio entry doesn't exist
+            if not protfolo_details:
+                logger.warning(f"No portfolio entry found for {symbol}, treating as zero quantity")
+                quantity = 0
+            else:
+                quantity = protfolo_details.quantity
 
             if quantity == 0:
                 logger.info(f"No quantity found for {symbol}, skipping auto buy/sell")
@@ -902,7 +929,12 @@ class StraddleService:
                 "profit_loss": 0,
                 "profit_loss_percent": 0,
                 "buy_trades": [],
-                "sell_trades": []
+                "sell_trades": [],
+                "profit_threshold_small": 0,
+                "profit_threshold_medium": 0,
+                "profit_threshold_large": 0,
+                "consecutive_threshold": 0,
+                "volatility_threshold": 0
             },
             "swap_status": {
                 "performed": False,
@@ -918,7 +950,8 @@ class StraddleService:
                 "support_levels": [],
                 "resistance_levels": [],
                 "volume_profile": ""
-            }
+            },
+            "suggestions": []
         }
 
         try:
@@ -926,6 +959,9 @@ class StraddleService:
             swap_service.db = self. db
             # Set the processing lock
             StraddleService._processing_locks[lock_key] = True
+
+            # Initialize zero quantity mode flag
+            zero_quantity_mode = False
 
             if not StraddleService.straddle_status:
                 logger.info(f"Straddle status is disabled, skipping auto buy/sell for {symbol}")
@@ -960,11 +996,52 @@ class StraddleService:
 
             #get quentity from portfolio
             protfolo_details = await portfolio_crud.get_by_user_and_symbol(self.db, symbol=symbol)
-            quantity = protfolo_details.quantity
 
-            # Update response with position size
-            response["metrics"]["position_size"] = quantity
-            response["metrics"]["current_value"] = quantity * current_price
+            # Handle case where portfolio entry doesn't exist
+            if not protfolo_details:
+                logger.warning(f"No portfolio entry found for {symbol}, treating as zero quantity")
+                quantity = 0
+            else:
+                quantity = protfolo_details.quantity
+
+            # Validate quantity before proceeding
+            if quantity <= 0:
+                logger.warning(f"Zero quantity found for {symbol}, but checking for stablecoin swap opportunities")
+                response["status"] = "ZERO_QUANTITY_MONITORING"
+                response["reason"] = f"Zero quantity for {symbol}, monitoring for swap opportunities from stablecoins"
+                response["metrics"]["position_size"] = quantity
+                response["metrics"]["current_value"] = 0
+
+                # Don't return early - continue to check for stablecoin swap opportunities
+                # Set a flag to indicate we're in zero-quantity mode
+                zero_quantity_mode = True
+            else:
+                # Additional validation for minimum trading requirements when we have quantity
+                if not self.validate_trade_quantity(symbol, quantity, current_price):
+                    min_quantity = self.get_minimum_trade_quantity(symbol, current_price)
+                    trade_value = quantity * current_price
+                    min_trade_value = 10.0
+
+                    logger.warning(f"Quantity {quantity} insufficient for trading {symbol}")
+                    response["status"] = "INSUFFICIENT_QUANTITY"
+                    response["reason"] = f"Quantity {quantity} insufficient for trading. Minimum: {min_quantity}, trade value: ${trade_value:.2f}"
+                    response["metrics"]["position_size"] = quantity
+                    response["metrics"]["current_value"] = trade_value
+                    response["metrics"]["minimum_quantity"] = min_quantity
+                    response["metrics"]["minimum_trade_value"] = min_trade_value
+                    response["suggestions"] = [
+                        f"Minimum quantity required: {min_quantity}",
+                        f"Minimum trade value required: ${min_trade_value}",
+                        f"Current trade value: ${trade_value:.2f}",
+                        "Consider increasing your position size"
+                    ]
+                    return response
+                zero_quantity_mode = False
+
+            # Update response with position size (only if not in zero quantity mode)
+            if not zero_quantity_mode:
+                response["metrics"]["position_size"] = quantity
+                response["metrics"]["current_value"] = quantity * current_price
 
             # Get enhanced market data for intraday analysis (include volume, OHLC, and more candlesticks)
             # Use shorter intervals for more granular intraday analysis
@@ -1061,73 +1138,96 @@ class StraddleService:
             # Update response with trend information
             response["metrics"]["trend_direction"] = price_direction
             response["metrics"]["recent_prices"] = recent_prices[:5]  # Just show the 5 most recent ones
-            # Rest of the auto_buy_sell_straddle_inprogress function remains the same
 
             if open_positions.status == "OPEN":
-                trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
-                await self.db.refresh(open_positions)
-                logger.info(f"No open straddle position exists for {symbol}, proceeding with auto buy/sell")
-                #update the position status to in progress
-                open_positions.status = "IN_PROGRESS"
-                updated_position = await position_crud.update(
-                    self.db,
-                    db_obj=open_positions,
-                    obj_in={
-                        "status": "IN_PROGRESS"
-                    }
+                # Only create trades if we have sufficient quantity
+                if not zero_quantity_mode:
+                    trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
+                    await self.db.refresh(open_positions)
+                    logger.info(f"No open straddle position exists for {symbol}, proceeding with auto buy/sell")
+                    #update the position status to in progress
+                    open_positions.status = "IN_PROGRESS"
+                    updated_position = await position_crud.update(
+                        self.db,
+                        db_obj=open_positions,
+                        obj_in={
+                            "status": "IN_PROGRESS"
+                        }
+                    )
+                    await self.db.refresh(updated_position)
+                    logger.info(f"Updated position status to IN_PROGRESS for {symbol}")
+
+                    # Update response
+                    response["status"] = "INITIATED"
+                    response["trades"] = [self._trade_to_dict(trade) for trade in trades]
+                    for trade in trades:
+                        if trade.side == "BUY":
+                            response["metrics"]["buy_trades"].append(self._trade_to_dict(trade))
+                        else:
+                            response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
+                    return response
+                else:
+                    # In zero quantity mode, skip trade creation and go directly to monitoring for swaps
+                    logger.info(f"Zero quantity mode for {symbol}, skipping trade creation, monitoring for swap opportunities")
+                    response["status"] = "ZERO_QUANTITY_MONITORING"
+
+            #get trades from symbol (only if not in zero quantity mode)
+            if not zero_quantity_mode:
+                trades = await trade_crud.get_multi_by_symbol_and_status(
+                    self.db, symbol=symbol, status=["PENDING"]
                 )
-                await self.db.refresh(updated_position)
-                logger.info(f"Updated position status to IN_PROGRESS for {symbol}")
+                if not trades:
+                    new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
+                    # Update response
+                    response["status"] = "RECREATED"
+                    response["trades"] = [self._trade_to_dict(trade) for trade in new_trades]
+                    for trade in new_trades:
+                        if trade.side == "BUY":
+                            response["metrics"]["buy_trades"].append(self._trade_to_dict(trade))
+                        else:
+                            response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
+                    return response
 
-                # Update response
-                response["status"] = "INITIATED"
-                response["trades"] = [self._trade_to_dict(trade) for trade in trades]
-                for trade in trades:
-                    if trade.side == "BUY":
-                        response["metrics"]["buy_trades"].append(self._trade_to_dict(trade))
-                    else:
-                        response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
-                return response
+                #filter the trades by side buy and status open
+                buy_trades = [trade for trade in trades if trade.side == "BUY" and trade.status == "PENDING"]
+                sell_trades = [trade for trade in trades if trade.side == "SELL" and trade.status == "PENDING"]
 
-            #get trades from symbol
-            trades = await trade_crud.get_multi_by_symbol_and_status(
-                self.db, symbol=symbol, status=["PENDING"]
-            )
-            if not trades:
-                new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
-                # Update response
-                response["status"] = "RECREATED"
-                response["trades"] = [self._trade_to_dict(trade) for trade in new_trades]
-                for trade in new_trades:
-                    if trade.side == "BUY":
-                        response["metrics"]["buy_trades"].append(self._trade_to_dict(trade))
-                    else:
-                        response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
-                return response
+                # Update response with trade information
+                response["metrics"]["buy_trades"] = [self._trade_to_dict(trade) for trade in buy_trades]
+                response["metrics"]["sell_trades"] = [self._trade_to_dict(trade) for trade in sell_trades]
 
-            #filter the trades by side buy and status open
-            buy_trades = [trade for trade in trades if trade.side == "BUY" and trade.status == "PENDING"]
-            sell_trades = [trade for trade in trades if trade.side == "SELL" and trade.status == "PENDING"]
+                if not buy_trades or not sell_trades:
+                    logger.info(f"Missing buy or sell trades for {symbol}, recreating straddle")
+                    new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
+                    # Update response
+                    response["status"] = "RECREATED"
+                    response["trades"] = [self._trade_to_dict(trade) for trade in new_trades]
+                    # Update buy/sell trades
+                    response["metrics"]["buy_trades"] = []
+                    response["metrics"]["sell_trades"] = []
+                    for trade in new_trades:
+                        if trade.side == "BUY":
+                            response["metrics"]["buy_trades"].append(self._trade_to_dict(trade))
+                        else:
+                            response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
+                    return response
+            else:
+                # In zero quantity mode, create mock trades for monitoring purposes (not actual trades)
+                buy_entry, sell_entry = self.strategy.calculate_entry_levels(current_price)
+                buy_trades = []  # Empty list
+                sell_trades = []  # Empty list
+                trades = []  # Empty list
 
-            # Update response with trade information
-            response["metrics"]["buy_trades"] = [self._trade_to_dict(trade) for trade in buy_trades]
-            response["metrics"]["sell_trades"] = [self._trade_to_dict(trade) for trade in sell_trades]
+                # Create mock trade objects for calculations (not saved to DB)
+                class MockTrade:
+                    def __init__(self, entry_price, side):
+                        self.entry_price = entry_price
+                        self.side = side
 
-            if not buy_trades or not sell_trades:
-                logger.info(f"Missing buy or sell trades for {symbol}, recreating straddle")
-                new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
-                # Update response
-                response["status"] = "RECREATED"
-                response["trades"] = [self._trade_to_dict(trade) for trade in new_trades]
-                # Update buy/sell trades
-                response["metrics"]["buy_trades"] = []
-                response["metrics"]["sell_trades"] = []
-                for trade in new_trades:
-                    if trade.side == "BUY":
-                        response["metrics"]["buy_trades"].append(self._trade_to_dict(trade))
-                    else:
-                        response["metrics"]["sell_trades"].append(self._trade_to_dict(trade))
-                return response
+                mock_buy_trade = MockTrade(buy_entry, "BUY")
+                mock_sell_trade = MockTrade(sell_entry, "SELL")
+                buy_trades = [mock_buy_trade]
+                sell_trades = [mock_sell_trade]
 
             # Count consecutive increases/decreases to detect trend strength
             consecutive_same_direction = 1
@@ -1416,9 +1516,11 @@ class StraddleService:
                 return response
 
             if (current_price < buy_trades[0].entry_price and current_price > sell_trades[0].entry_price):
-                logger.info(f"Straddle position already exists for {symbol}, monitoring for opportunities")
-                # Separate condition for swapping from stablecoin back to crypto during trends
+                logger.info(f"Price {current_price} is in monitoring range for {symbol} (between {sell_trades[0].entry_price} and {buy_trades[0].entry_price})")
+
+                # Enhanced monitoring logic - works for both normal and zero quantity modes
                 # This runs during the monitoring phase and checks if we should swap back from stablecoin
+                is_buy = self.strategy.is_good_buy_entry(price_direction, short_term_changes, relative_volume, current_price, support_levels, resistance_levels)
                 if short_term_price_direction == "up" and (price_direction == "up" or consecutive_same_direction >= 2) and \
                     self.strategy.is_good_buy_entry(
                         price_direction,
@@ -1428,8 +1530,7 @@ class StraddleService:
                         support_levels,
                         resistance_levels
                     ):
-                    # Get available stablecoins regardless of should_swap_from_stable flag
-                    # This makes it more responsive to new trends
+                    # Get available stablecoins regardless of main symbol quantity
                     stable_coin_data = await binance_helper.get_best_stable_coin()
                     available_stables = stable_coin_data["available_stables"]
 
@@ -1446,19 +1547,27 @@ class StraddleService:
                             largest_amount = stable_portfolio.quantity
 
                     if best_stable_to_swap_from and largest_amount > 0:
+                        logger.info(f"Found {largest_amount} {best_stable_to_swap_from} available for potential swap to {symbol}")
+
                         # Determine if we should swap based on technical conditions
                         should_swap_back = False
                         swap_back_percentage = 0.2  # Default - start conservative
 
+                        # In zero quantity mode, be more aggressive about swapping since we have no crypto exposure
+                        if zero_quantity_mode:
+                            should_swap_back = True  # Always consider swapping when we have zero crypto
+                            swap_back_percentage = 0.5  # More aggressive in zero quantity mode
+                            logger.info(f"Zero quantity mode active - being more aggressive about swapping to {symbol}")
+
                         # Check for bullish intraday patterns
                         if intraday_pattern in ["double_bottom", "inverse_head_shoulders"]:
                             should_swap_back = True
-                            swap_back_percentage = 0.5  # More bullish pattern
+                            swap_back_percentage = max(swap_back_percentage, 0.5)  # More bullish pattern
 
                         # Check if we're bouncing off a support level
                         elif any(abs(current_price - support) / support < 0.02 for support in support_levels):
                             should_swap_back = True
-                            swap_back_percentage = 0.3
+                            swap_back_percentage = max(swap_back_percentage, 0.3)
 
                         # Check volume profile for accumulation
                         elif volume_profile == "accumulation" and relative_volume > 1.2:
@@ -1482,15 +1591,21 @@ class StraddleService:
                                 should_swap_back = True
                                 swap_back_percentage += 0.1
 
-                        # Cap the percentage
-                        swap_back_percentage = min(0.7, swap_back_percentage)
+                        # Cap the percentage (higher cap in zero quantity mode)
+                        max_percentage = 0.9 if zero_quantity_mode else 0.7
+                        swap_back_percentage = min(max_percentage, swap_back_percentage)
 
                         # Execute swap if conditions are met
                         if should_swap_back:
-                            swap_back_percentage = 1
+                            # In zero quantity mode, use full percentage to get meaningful crypto exposure
+                            if zero_quantity_mode:
+                                swap_back_percentage = 0.8  # Use 80% of stablecoin for initial crypto purchase
+
                             swap_amount = largest_amount * swap_back_percentage
                             if swap_amount > 0:
-                                logger.info(f"Swapping back from {best_stable_to_swap_from} to {symbol} due to detected trend reversal")
+                                swap_reason = "Zero quantity mode - initial crypto purchase" if zero_quantity_mode else "Detected trend reversal"
+                                logger.info(f"Swapping {swap_back_percentage*100:.1f}% from {best_stable_to_swap_from} to {symbol}: {swap_reason}")
+
                                 swap_result = await swap_service.swap_stable_coin_symbol(
                                     best_stable_to_swap_from,
                                     symbol,
@@ -1500,22 +1615,38 @@ class StraddleService:
 
                                 # Update swap status
                                 response["swap_status"]["performed"] = True
+                                response["swap_status"]["swap_transaction_id"] = swap_result.get("transaction", {}).get("transaction_id")
                                 response["swap_status"]["from_coin"] = best_stable_to_swap_from
                                 response["swap_status"]["to_coin"] = symbol
                                 response["swap_status"]["amount"] = swap_amount
                                 response["swap_status"]["price"] = current_price
                                 response["swap_status"]["percentage"] = swap_back_percentage * 100
-                                response["swap_status"]["reason"] = "Detected trend reversal, swapping from stable to crypto"
+                                response["swap_status"]["reason"] = swap_reason
                                 response["status"] = "SWAP_PERFORMED"
-                                response["reason"] = f"Trend reversal detected, swapped {swap_back_percentage*100:.1f}% from {best_stable_to_swap_from} to {symbol}"
+                                response["reason"] = f"{swap_reason}: swapped {swap_back_percentage*100:.1f}% from {best_stable_to_swap_from} to {symbol}"
+                    else:
+                        logger.info(f"No suitable stablecoin found for swap. Available stables: {available_stables}")
+                        if zero_quantity_mode:
+                            response["suggestions"] = [
+                                "No stablecoins available for swapping",
+                                "Consider adding USDT, USDC, or BUSD to your portfolio",
+                                "Fund your account with stablecoins to enable automatic buying"
+                            ]
 
                 # Update response for monitoring state
-                if response["status"] != "SWAP_PERFORMED":
-                    response["status"] = "MONITORING"
-                # Refresh each trade individually instead of trying to refresh the list
-                for trade in trades:
-                    await self.db.refresh(trade)
-                response["trades"] = [self._trade_to_dict(trade) for trade in trades]
+                if response["status"] not in ["SWAP_PERFORMED"]:
+                    if zero_quantity_mode:
+                        response["status"] = "ZERO_QUANTITY_MONITORING"
+                    else:
+                        response["status"] = "MONITORING"
+
+                # Refresh trades only if we have actual trades (not in zero quantity mode)
+                if not zero_quantity_mode:
+                    for trade in trades:
+                        await self.db.refresh(trade)
+                    response["trades"] = [self._trade_to_dict(trade) for trade in trades]
+                else:
+                    response["trades"] = []  # No actual trades in zero quantity mode
 
             # At the end of the function, before returning and after all operations are complete,
              # New check: Update portfolio with live data regularly
@@ -1569,5 +1700,55 @@ class StraddleService:
         StraddleService.straddle_status = not StraddleService.straddle_status
         logger.info(f"Straddle status changed to {StraddleService.straddle_status}")
         return StraddleService.straddle_status
+
+    def get_minimum_trade_quantity(self, symbol: str, current_price: float) -> float:
+        """
+        Calculate minimum viable quantity for straddle trading
+        This considers minimum order size requirements and practical trading limits
+        """
+        try:
+            # Base minimum quantity (could be configured per symbol)
+            base_minimum = 0.001  # Very small default minimum
+
+            # For symbols with higher prices, adjust minimum quantity
+            if current_price > 50000:  # Like BTC
+                return max(base_minimum, 0.0001)
+            elif current_price > 1000:  # Like ETH
+                return max(base_minimum, 0.001)
+            elif current_price > 100:  # Like BNB
+                return max(base_minimum, 0.01)
+            elif current_price > 1:  # Like ADA, DOT
+                return max(base_minimum, 0.1)
+            else:  # Very low price coins
+                return max(base_minimum, 1.0)
+
+        except Exception as e:
+            logger.error(f"Error calculating minimum quantity for {symbol}: {str(e)}")
+            return 0.001  # Safe default
+
+    def validate_trade_quantity(self, symbol: str, quantity: float, current_price: float) -> bool:
+        """
+        Validate if the quantity is sufficient for trading
+        """
+        try:
+            min_quantity = self.get_minimum_trade_quantity(symbol, current_price)
+            min_notional_value = 10.0  # Minimum $10 trade value
+
+            # Check minimum quantity
+            if quantity < min_quantity:
+                logger.warning(f"Quantity {quantity} below minimum {min_quantity} for {symbol}")
+                return False
+
+            # Check minimum notional value
+            trade_value = quantity * current_price
+            if trade_value < min_notional_value:
+                logger.warning(f"Trade value ${trade_value:.2f} below minimum ${min_notional_value} for {symbol}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error validating trade quantity for {symbol}: {str(e)}")
+            return False
 
 straddle_service = StraddleService(None)  # Will be initialized with DB session later
