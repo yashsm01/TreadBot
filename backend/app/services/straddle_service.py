@@ -79,7 +79,6 @@ class StraddleStrategy:
         not_near_resistance = all(price < r * 0.95 for r in resistance_levels)
 
         return (
-            price_direction == "up" and
             positive_momentum and
             volume_confirms and
             near_support and

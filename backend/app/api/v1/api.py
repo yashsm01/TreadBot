@@ -9,7 +9,8 @@ from app.api.v1.endpoints import (
     swap_transaction_routes,
     portfolio_summary_routes,
     one_inch_routes,
-    profit_routes
+    profit_routes,
+    graph_routes
 )
 
 api_router = APIRouter()
@@ -79,4 +80,10 @@ api_router.include_router(
     profit_routes.router,
     prefix="/profit",
     tags=["profit"]
+)
+
+api_router.include_router(
+    graph_routes.router,
+    prefix="/graph",
+    tags=["graph"]
 )

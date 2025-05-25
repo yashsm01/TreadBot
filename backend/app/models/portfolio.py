@@ -11,6 +11,7 @@ class Portfolio(Base):
     symbol = Column(String, nullable=False)
     quantity = Column(Float, default=0)
     avg_buy_price = Column(Float, nullable=False)
+    realized_profit = Column(Float, default=0.0, nullable=False)  # Cumulative realized P/L
     last_updated = Column(DateTime, default=datetime.utcnow)
     asset_type = Column(String, nullable=True)
 

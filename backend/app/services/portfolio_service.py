@@ -163,7 +163,8 @@ class PortfolioService:
                             "user_id": user_id,
                             "symbol": symbol,
                             "quantity": 0,
-                            "avg_buy_price": price
+                            "avg_buy_price": price,
+                            "last_updated": datetime.utcnow()
                         }
                     )
 

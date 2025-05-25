@@ -202,7 +202,7 @@ class SchedulerService:
                 await telegram_service.initialize()
 
             straddle_service = StraddleService(self.db)
-            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('ETH/USDT')
+            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('DOGE/USDT')
 
             # Use the enhanced notification service for better formatting
             await notification_service.send_straddle_status_notification(trading_status)
@@ -377,7 +377,7 @@ class SchedulerService:
                 await telegram_service.initialize()
 
             straddle_service = StraddleService(self.db)
-            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('ETH/USDT')
+            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('DOGE/USDT')
 
             # Use the enhanced notification method
             await notification_service.send_straddle_status_notification(trading_status)

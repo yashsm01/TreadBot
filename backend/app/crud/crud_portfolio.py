@@ -73,6 +73,7 @@ class CRUDPortfolio(CRUDBase[Portfolio, PortfolioCreate, PortfolioUpdate]):
     # Override the create method to ensure proper datetime handling
     async def create(self, db: AsyncSession, *, obj_in: PortfolioCreate) -> Portfolio:
         """Create a new portfolio with proper datetime handling"""
+        obj_in = PortfolioCreate(**obj_in)
         # Convert any string dates to proper datetime objects
         if isinstance(obj_in.last_updated, str):
             obj_in.last_updated = datetime.fromisoformat(obj_in.last_updated.replace('Z', '+00:00'))
@@ -82,6 +83,7 @@ class CRUDPortfolio(CRUDBase[Portfolio, PortfolioCreate, PortfolioUpdate]):
             symbol=obj_in.symbol,
             quantity=obj_in.quantity,
             avg_buy_price=obj_in.avg_buy_price,
+            realized_profit=obj_in.realized_profit or 0.0,
             asset_type=obj_in.asset_type,
             user_id=obj_in.user_id,
             last_updated=obj_in.last_updated
@@ -91,6 +93,79 @@ class CRUDPortfolio(CRUDBase[Portfolio, PortfolioCreate, PortfolioUpdate]):
         await db.commit()
         await db.refresh(db_obj)
         return db_obj
+
+    async def update_realized_profit(
+        self,
+        db: AsyncSession,
+        portfolio: Portfolio,
+        profit_amount: float
+    ) -> Portfolio:
+        """Update the realized profit for a portfolio"""
+        current_profit = getattr(portfolio, 'realized_profit', 0.0) or 0.0
+        portfolio.realized_profit = current_profit + profit_amount
+        portfolio.last_updated = helpers.get_current_ist_for_db()
+
+        db.add(portfolio)
+        await db.commit()
+        await db.refresh(portfolio)
+        return portfolio
+
+    async def get_portfolio_with_profit_summary(
+        self,
+        db: AsyncSession,
+        user_id: int = 1
+    ) -> Dict:
+        """Get portfolio summary including realized and unrealized profits"""
+        try:
+            portfolios = await self.get_user_portfolio(db, user_id=user_id, active_only=False)
+
+            total_realized_profit = 0.0
+            total_unrealized_profit = 0.0
+            total_invested = 0.0
+            total_current_value = 0.0
+
+            portfolio_details = []
+
+            for portfolio in portfolios:
+                realized_profit = getattr(portfolio, 'realized_profit', 0.0) or 0.0
+                total_realized_profit += realized_profit
+
+                if portfolio.quantity > 0:
+                    invested_value = portfolio.quantity * portfolio.avg_buy_price
+                    total_invested += invested_value
+
+                    # Note: You'll need to get current price from price service
+                    # For now, we'll use avg_buy_price as placeholder
+                    current_value = portfolio.quantity * portfolio.avg_buy_price
+                    total_current_value += current_value
+
+                    unrealized_profit = current_value - invested_value
+                    total_unrealized_profit += unrealized_profit
+
+                    portfolio_details.append({
+                        "symbol": portfolio.symbol,
+                        "quantity": portfolio.quantity,
+                        "avg_buy_price": portfolio.avg_buy_price,
+                        "realized_profit": realized_profit,
+                        "unrealized_profit": unrealized_profit,
+                        "total_profit": realized_profit + unrealized_profit
+                    })
+
+            return {
+                "portfolios": portfolio_details,
+                "summary": {
+                    "total_invested": total_invested,
+                    "total_current_value": total_current_value,
+                    "total_realized_profit": total_realized_profit,
+                    "total_unrealized_profit": total_unrealized_profit,
+                    "total_profit": total_realized_profit + total_unrealized_profit,
+                    "total_profit_percentage": (total_realized_profit + total_unrealized_profit) / total_invested * 100 if total_invested > 0 else 0
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting portfolio profit summary: {str(e)}")
+            return {"portfolios": [], "summary": {}}
 
 
 # Create instances

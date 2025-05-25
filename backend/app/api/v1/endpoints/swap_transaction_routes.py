@@ -6,6 +6,7 @@ from app.services.swap_service import swap_service
 from app.crud.crud_swap_transaction import swap_transaction_crud
 from app.core.logger import logger
 from pydantic import BaseModel, Field
+from datetime import datetime
 
 router = APIRouter()
 
@@ -152,3 +153,92 @@ async def get_swap_transaction(
     except Exception as e:
         logger.error(f"Error getting swap transaction: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get swap transaction: {str(e)}")
+
+@router.get("/profit-summary", response_model=Dict)
+async def get_swap_profit_summary(
+    user_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    days: Optional[int] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get profit/loss summary for swap transactions with optional filters
+    """
+    try:
+        summary = await swap_transaction_crud.get_profit_summary(
+            db, user_id=user_id, symbol=symbol, days=days
+        )
+        return {
+            "status": "success",
+            "data": summary
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get swap profit summary: {str(e)}"
+        )
+
+@router.get("/symbol-performance", response_model=Dict)
+async def get_symbol_performance(
+    user_id: Optional[int] = None,
+    days: int = 30,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get performance breakdown by symbol for swap transactions
+    """
+    try:
+        performance = await swap_transaction_crud.get_symbol_performance(
+            db, user_id=user_id, days=days
+        )
+        return {
+            "status": "success",
+            "data": performance
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get symbol performance: {str(e)}"
+        )
+
+@router.get("/profit-loss-report")
+async def get_profit_loss_report(
+    user_id: int = 1,
+    days: int = 30,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get comprehensive profit/loss report combining portfolio and swap data
+    """
+    try:
+        # Get swap P/L summary
+        swap_summary = await swap_transaction_crud.get_profit_summary(
+            db, user_id=user_id, days=days
+        )
+
+        # Get symbol performance
+        symbol_performance = await swap_transaction_crud.get_symbol_performance(
+            db, user_id=user_id, days=days
+        )
+
+        # Get portfolio summary
+        from app.crud.crud_portfolio import portfolio_crud
+        portfolio_summary = await portfolio_crud.get_portfolio_with_profit_summary(
+            db, user_id=user_id
+        )
+
+        return {
+            "status": "success",
+            "data": {
+                "report_period_days": days,
+                "swap_transactions": swap_summary,
+                "symbol_performance": symbol_performance,
+                "portfolio_summary": portfolio_summary,
+                "generated_at": datetime.utcnow().isoformat()
+            }
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate P/L report: {str(e)}"
+        )

@@ -74,8 +74,25 @@ class SwapService:
             if existing_crypto:
                 # Update existing entry - reduce quantity
                 if existing_crypto.quantity >= quantity:
+                    # Calculate realized P/L for the sale (selling crypto for stablecoin)
+                    # Handle edge cases where avg_buy_price might be 0 or None
+                    avg_buy_price = existing_crypto.avg_buy_price or 0.0
+                    realized_profit = (current_price - avg_buy_price) * quantity - fee_amount
+
+                    # Get current cumulative realized profit (handle case where field might not exist)
+                    current_realized_profit = getattr(existing_crypto, 'realized_profit', 0.0) or 0.0
+
+                    # Log the P/L calculation details
+                    logger.info(f"P/L Calculation for {symbol}: "
+                              f"Sale price: {current_price}, "
+                              f"Avg buy price: {avg_buy_price}, "
+                              f"Quantity: {quantity}, "
+                              f"Fee: {fee_amount}, "
+                              f"Realized profit: {realized_profit}")
+
                     update_data = {
                         "quantity": existing_crypto.quantity - quantity,
+                        "realized_profit": current_realized_profit + realized_profit,
                         "last_updated": transaction_time
                     }
 
@@ -83,11 +100,11 @@ class SwapService:
                         # Keep in portfolio but set quantity to exactly 0
                         update_data["quantity"] = 0
                         await portfolio_crud.update(self.db, db_obj=existing_crypto, obj_in=update_data)
-                        logger.info(f"Updated {symbol} portfolio quantity to 0 (keeping record)")
+                        logger.info(f"Updated {symbol} portfolio quantity to 0 (keeping record), realized P/L: {realized_profit:.4f}")
                     else:
                         # Update with new quantity
                         await portfolio_crud.update(self.db, db_obj=existing_crypto, obj_in=update_data)
-                        logger.info(f"Updated {symbol} portfolio: new quantity = {update_data['quantity']}")
+                        logger.info(f"Updated {symbol} portfolio: new quantity = {update_data['quantity']}, realized P/L: {realized_profit:.4f}")
                 else:
                     return {
                         "status": "failed",
@@ -104,8 +121,10 @@ class SwapService:
 
             if existing_stable:
                 # Update existing stablecoin entry
+                current_stable_profit = getattr(existing_stable, 'realized_profit', 0.0) or 0.0
                 update_data = {
                     "quantity": existing_stable.quantity + stable_amount,
+                    "realized_profit": current_stable_profit,  # Keep existing realized profit for stablecoin
                     "last_updated": transaction_time
                 }
                 await portfolio_crud.update(self.db, db_obj=existing_stable, obj_in=update_data)
@@ -118,6 +137,7 @@ class SwapService:
                     symbol=stable_coin,
                     quantity=stable_amount,
                     avg_buy_price=1.0,  # Stablecoins are pegged to 1.0
+                    realized_profit=0.0,  # Initialize realized profit for new stablecoin
                     last_updated=datetime.utcnow(),  # Fresh datetime
                     asset_type="STABLE",
                     user_id=1
@@ -129,6 +149,21 @@ class SwapService:
                 await self.db.refresh(new_stable_db)
 
                 logger.info(f"Added {stable_coin} to portfolio with quantity {stable_amount}")
+
+                # Set update_data for transaction details
+                update_data = {
+                    "quantity": stable_amount,
+                    "realized_profit": 0.0,  # New stablecoin has no realized profit yet
+                    "last_updated": transaction_time
+                }
+
+            # Log overall swap summary for P/L tracking
+            profit_percentage = (realized_profit/abs(avg_buy_price * quantity))*100 if avg_buy_price > 0 else 0
+            logger.info(f"SWAP SUMMARY - {symbol} to {stable_coin}: "
+                       f"Sold {quantity} {symbol} at {current_price} "
+                       f"(avg cost: {avg_buy_price}) = "
+                       f"Realized P/L: {realized_profit:.4f} "
+                       f"({profit_percentage:+.2f}% profit)")
 
             # Generate a transaction ID
             transaction_id = helpers.generate_transaction_id()
@@ -143,6 +178,7 @@ class SwapService:
                 rate=current_price,
                 fee_percentage=fee_percentage,
                 fee_amount=fee_amount,
+                realized_profit=realized_profit,
                 timestamp=datetime.utcnow(),  # Use a fresh datetime
                 status="completed",
                 user_id=1,
@@ -166,6 +202,9 @@ class SwapService:
                 "rate": current_price,
                 "fee_percentage": fee_percentage,
                 "fee_amount": fee_amount,
+                "realized_profit": realized_profit,
+                "cumulative_realized_profit": update_data["realized_profit"],
+                "avg_buy_price": avg_buy_price,
                 "status": "completed"
             }
 
@@ -176,7 +215,14 @@ class SwapService:
                 "status": "success",
                 "message": f"Successfully swapped {quantity} {symbol} for {stable_amount} {stable_coin}",
                 "transaction": transaction_details,
-                "swap_transaction_id": transaction_details["transaction_id"]
+                "swap_transaction_id": transaction_details["transaction_id"],
+                "profit_loss_info": {
+                    "realized_profit": realized_profit,
+                    "cumulative_realized_profit": update_data["realized_profit"],
+                    "profit_percentage": (realized_profit / (avg_buy_price * quantity)) * 100 if avg_buy_price > 0 else 0,
+                    "sale_price": current_price,
+                    "original_avg_price": avg_buy_price
+                }
             }
 
         except Exception as e:
@@ -229,8 +275,12 @@ class SwapService:
             if existing_stable:
                 # Update existing entry - reduce stablecoin quantity
                 if existing_stable.quantity >= amount:
+                    # Get current cumulative realized profit for stablecoin (handle case where field might not exist)
+                    current_stable_profit = getattr(existing_stable, 'realized_profit', 0.0) or 0.0
+
                     update_data = {
                         "quantity": existing_stable.quantity - amount,
+                        "realized_profit": current_stable_profit,  # Keep existing realized profit for stablecoin
                         "last_updated": transaction_time
                     }
 
@@ -264,14 +314,22 @@ class SwapService:
                 total_quantity = existing_crypto.quantity + crypto_amount
                 new_avg_price = (total_value_before + new_value) / total_quantity
 
+                # Get current cumulative realized profit (handle case where field might not exist)
+                current_realized_profit = getattr(existing_crypto, 'realized_profit', 0.0) or 0.0
+
                 # Update existing cryptocurrency entry
                 update_data = {
                     "quantity": total_quantity,
                     "avg_buy_price": new_avg_price,
+                    "realized_profit": current_realized_profit,  # Keep existing realized profit
                     "last_updated": transaction_time
                 }
                 await portfolio_crud.update(self.db, db_obj=existing_crypto, obj_in=update_data)
                 logger.info(f"Updated {symbol} portfolio: new quantity = {total_quantity}, new avg price = {new_avg_price}")
+
+                # For tracking purposes
+                portfolio_realized_profit = current_realized_profit
+                previous_avg_price = existing_crypto.avg_buy_price
             else:
                 # Create new cryptocurrency entry directly using the database model
                 # Create directly with database model to avoid serialization issues
@@ -282,6 +340,7 @@ class SwapService:
                     symbol=symbol,
                     quantity=crypto_amount,
                     avg_buy_price=current_price,
+                    realized_profit=0.0,  # Initialize realized profit for new crypto
                     last_updated=datetime.utcnow(),  # Fresh datetime
                     asset_type="CRYPTO",
                     user_id=1
@@ -293,6 +352,16 @@ class SwapService:
                 await self.db.refresh(new_crypto_db)
 
                 logger.info(f"Added {symbol} to portfolio with quantity {crypto_amount}")
+
+                # For tracking purposes
+                portfolio_realized_profit = 0.0
+                previous_avg_price = current_price
+
+            # Log overall swap summary for P/L tracking
+            logger.info(f"SWAP SUMMARY - {stable_coin} to {symbol}: "
+                       f"Bought {crypto_amount} {symbol} for {amount} {stable_coin} at {current_price} "
+                       f"(new avg cost: {new_avg_price if existing_crypto else current_price}) "
+                       f"Cumulative realized P/L: {portfolio_realized_profit:.4f}")
 
             # Generate a transaction ID
             transaction_id = helpers.generate_transaction_id()
@@ -307,6 +376,7 @@ class SwapService:
                 rate=current_price,
                 fee_percentage=fee_percentage,
                 fee_amount=fee_amount,
+                realized_profit=portfolio_realized_profit,
                 timestamp=datetime.utcnow(),  # Use a fresh datetime
                 status="completed",
                 user_id=1,
@@ -330,6 +400,10 @@ class SwapService:
                 "rate": current_price,
                 "fee_percentage": fee_percentage,
                 "fee_amount": fee_amount,
+                "unrealized_profit": 0.0,  # No realized profit on purchase
+                "cumulative_realized_profit": portfolio_realized_profit,
+                "new_avg_buy_price": new_avg_price if existing_crypto else current_price,
+                "previous_avg_price": previous_avg_price,
                 "status": "completed"
             }
 
@@ -338,7 +412,16 @@ class SwapService:
             return {
                 "status": "success",
                 "message": f"Successfully swapped {amount} {stable_coin} for {crypto_amount} {symbol}",
-                "transaction": transaction_details
+                "transaction": transaction_details,
+                "cost_basis_info": {
+                    "crypto_amount_received": crypto_amount,
+                    "cost_per_unit": current_price,
+                    "total_cost": amount,
+                    "fees_paid": fee_amount,
+                    "new_avg_buy_price": new_avg_price if existing_crypto else current_price,
+                    "previous_avg_price": previous_avg_price,
+                    "cumulative_realized_profit": portfolio_realized_profit
+                }
             }
 
         except Exception as e:

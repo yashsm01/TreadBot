@@ -128,4 +128,121 @@ class CRUDSwapTransaction(CRUDBase[SwapTransaction, SwapTransactionCreate, SwapT
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_profit_summary(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        days: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Get profit/loss summary for swap transactions"""
+        try:
+            stmt = select(SwapTransaction)
+
+            if user_id:
+                stmt = stmt.where(SwapTransaction.user_id == user_id)
+
+            if symbol:
+                stmt = stmt.where(
+                    or_(
+                        SwapTransaction.from_symbol == symbol,
+                        SwapTransaction.to_symbol == symbol
+                    )
+                )
+
+            if days:
+                since_date = datetime.utcnow() - timedelta(days=days)
+                stmt = stmt.where(SwapTransaction.timestamp >= since_date)
+
+            result = await db.execute(stmt)
+            transactions = result.scalars().all()
+
+            if not transactions:
+                return {
+                    "total_swaps": 0,
+                    "total_realized_profit": 0.0,
+                    "total_fees_paid": 0.0,
+                    "average_profit_per_swap": 0.0,
+                    "profitable_swaps": 0,
+                    "loss_swaps": 0,
+                    "profit_percentage": 0.0
+                }
+
+            total_realized_profit = sum(getattr(t, 'realized_profit', 0.0) or 0.0 for t in transactions)
+            total_fees_paid = sum(t.fee_amount for t in transactions)
+            profitable_swaps = len([t for t in transactions if (getattr(t, 'realized_profit', 0.0) or 0.0) > 0])
+            loss_swaps = len([t for t in transactions if (getattr(t, 'realized_profit', 0.0) or 0.0) < 0])
+
+            return {
+                "total_swaps": len(transactions),
+                "total_realized_profit": total_realized_profit,
+                "total_fees_paid": total_fees_paid,
+                "average_profit_per_swap": total_realized_profit / len(transactions),
+                "profitable_swaps": profitable_swaps,
+                "loss_swaps": loss_swaps,
+                "profit_percentage": (profitable_swaps / len(transactions)) * 100,
+                "net_profit_after_fees": total_realized_profit - total_fees_paid
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting profit summary: {str(e)}")
+            return {"error": str(e)}
+
+    async def get_symbol_performance(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: Optional[int] = None,
+        days: Optional[int] = 30
+    ) -> Dict[str, Any]:
+        """Get performance breakdown by symbol"""
+        try:
+            stmt = select(SwapTransaction)
+
+            if user_id:
+                stmt = stmt.where(SwapTransaction.user_id == user_id)
+
+            if days:
+                since_date = datetime.utcnow() - timedelta(days=days)
+                stmt = stmt.where(SwapTransaction.timestamp >= since_date)
+
+            result = await db.execute(stmt)
+            transactions = result.scalars().all()
+
+            symbol_performance = {}
+
+            for transaction in transactions:
+                # Track both from_symbol and to_symbol
+                for symbol in [transaction.from_symbol, transaction.to_symbol]:
+                    if symbol not in symbol_performance:
+                        symbol_performance[symbol] = {
+                            "total_swaps": 0,
+                            "total_realized_profit": 0.0,
+                            "total_fees": 0.0,
+                            "total_volume": 0.0
+                        }
+
+                    symbol_performance[symbol]["total_swaps"] += 1
+                    symbol_performance[symbol]["total_realized_profit"] += getattr(transaction, 'realized_profit', 0.0) or 0.0
+                    symbol_performance[symbol]["total_fees"] += transaction.fee_amount
+
+                    # Add volume (from_amount for from_symbol, to_amount for to_symbol)
+                    if symbol == transaction.from_symbol:
+                        symbol_performance[symbol]["total_volume"] += transaction.from_amount
+                    else:
+                        symbol_performance[symbol]["total_volume"] += transaction.to_amount
+
+            # Calculate derived metrics
+            for symbol, data in symbol_performance.items():
+                data["average_profit_per_swap"] = data["total_realized_profit"] / data["total_swaps"] if data["total_swaps"] > 0 else 0
+                data["net_profit"] = data["total_realized_profit"] - data["total_fees"]
+                data["profit_percentage"] = (data["total_realized_profit"] / data["total_volume"]) * 100 if data["total_volume"] > 0 else 0
+
+            return symbol_performance
+
+        except Exception as e:
+            logger.error(f"Error getting symbol performance: {str(e)}")
+            return {"error": str(e)}
+
 swap_transaction_crud = CRUDSwapTransaction(SwapTransaction)

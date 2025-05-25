@@ -8,8 +8,9 @@ class PortfolioCreate(BaseModel):
     symbol: str
     quantity: float
     avg_buy_price: float
+    realized_profit: Optional[float] = 0.0
     asset_type: Optional[str] = None
-    last_updated: datetime
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
     user_id: int = 1
 
     # Add a validator to ensure we have a proper datetime object
@@ -23,6 +24,7 @@ class PortfolioCreate(BaseModel):
 class PortfolioUpdate(BaseModel):
     quantity: Optional[float] = None
     avg_buy_price: Optional[float] = None
+    realized_profit: Optional[float] = None
     last_updated: Optional[datetime] = None
 
 class PortfolioPosition(BaseModel):
@@ -34,6 +36,9 @@ class PortfolioPosition(BaseModel):
     invested_value: float
     profit_loss: float
     profit_loss_pct: float
+    realized_profit: float = 0.0  # Cumulative realized P/L
+    unrealized_profit: Optional[float] = None  # Current unrealized P/L
+    total_profit: Optional[float] = None  # Realized + Unrealized
     last_updated: datetime
 
 class PortfolioSummary(BaseModel):
