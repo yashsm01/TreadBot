@@ -21,6 +21,7 @@ class PositionCreate(PositionBase):
     average_entry_price: Optional[float] = None
     realized_pnl: float = 0
     unrealized_pnl: float = 0
+    max_trade_limit: float = 0
 
 class PositionUpdate(BaseModel):
     """Pydantic model for updating a position"""
@@ -61,3 +62,4 @@ class Position(Base):
     unrealized_pnl = Column(Float, default=0)
     open_time = Column(DateTime, default=datetime.utcnow)
     close_time = Column(DateTime, nullable=True)
+    max_trade_limit = Column(Float, default=0)

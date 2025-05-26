@@ -18,6 +18,9 @@ import asyncio
 import pandas as pd
 from app.services.telegram_service import TelegramService
 
+#curd operations
+from app.crud.curd_position import position_crud as curd_position
+
 class StraddleMonitor:
     def __init__(self):
         self.monitoring_symbols: Dict[str, bool] = {}
@@ -202,10 +205,14 @@ class SchedulerService:
                 await telegram_service.initialize()
 
             straddle_service = StraddleService(self.db)
-            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('DOGE/USDT')
+            #get in progress positions
+            possions = await curd_position.get_in_progress_positions(self.db)
+            for position in possions:
+                await self.db.refresh(position)
+                trading_status = await straddle_service.auto_buy_sell_straddle_inprogress(position.symbol)
+                # Use the enhanced notification service for better formatting
+                # await notification_service.send_straddle_status_notification(trading_status)
 
-            # Use the enhanced notification service for better formatting
-            await notification_service.send_straddle_status_notification(trading_status)
 
             return trading_status
         except Exception as e:
@@ -379,6 +386,11 @@ class SchedulerService:
             straddle_service = StraddleService(self.db)
             trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('DOGE/USDT')
 
+            # Use the enhanced notification method
+            await notification_service.send_straddle_status_notification(trading_status)
+
+            #second symbol
+            trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('TRUMP/USDT')
             # Use the enhanced notification method
             await notification_service.send_straddle_status_notification(trading_status)
 

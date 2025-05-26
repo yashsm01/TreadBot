@@ -18,6 +18,7 @@ class Position(Base):
     unrealized_pnl = Column(Float, default=0)
     open_time = Column(DateTime, default=datetime.utcnow)
     close_time = Column(DateTime, nullable=True)
+    max_trade_limit = Column(Float, default=0)
     # created_at = Column(DateTime, default=datetime.utcnow)
     # updated_at = Column(DateTime, default=datetime.utcnow)
 

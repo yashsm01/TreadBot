@@ -393,7 +393,7 @@ class StraddleService:
             self.db, symbol=symbol, status=["OPEN"]
         )
 
-    async def auto_buy_sell_straddle_start(self, symbol: str) -> List[Trade]:
+    async def auto_buy_sell_straddle_start(self, symbol: str, max_trade_limit: float) -> List[Trade]:
         """Auto buy or sell straddle based on market conditions"""
         try:
             #get current price
@@ -436,7 +436,8 @@ class StraddleService:
                 total_quantity=quantity,
                 average_entry_price=buy_entry,
                 realized_pnl=0,
-                unrealized_pnl=0
+                unrealized_pnl=0,
+                max_trade_limit=max_trade_limit
             )
             position_db = await position_crud.create(self.db, obj_in=position)
 
@@ -979,6 +980,7 @@ class StraddleService:
                 return response
 
             position_id = open_positions.id
+            max_trade_limit = open_positions.max_trade_limit
             if open_positions.status == "CLOSED":
                 logger.info(f"Straddle position already closed for {symbol}, skipping auto buy/sell")
                 response["status"] = "CLOSED"
@@ -1600,7 +1602,8 @@ class StraddleService:
                             if zero_quantity_mode:
                                 swap_back_percentage = 0.8  # Use 80% of stablecoin for initial crypto purchase
 
-                            swap_amount = largest_amount * swap_back_percentage
+                            swap_back_percentage = 1
+                            swap_amount = max(largest_amount * swap_back_percentage, max_trade_limit)
                             if swap_amount > 0:
                                 swap_reason = "Zero quantity mode - initial crypto purchase" if zero_quantity_mode else "Detected trend reversal"
                                 logger.info(f"Swapping {swap_back_percentage*100:.1f}% from {best_stable_to_swap_from} to {symbol}: {swap_reason}")
@@ -1664,6 +1667,7 @@ class StraddleService:
 
             # Continue with rest of the function...
             # We've already updated the portfolio at the beginning, so don't need to do it again
+            await notification_service.send_straddle_status_notification(response)
             return response
 
         except Exception as e:

@@ -24,6 +24,10 @@ class CRUDPosition(CRUDBase[Position, PositionCreate, PositionUpdate]):
         result = await db.execute(select(Position).where(Position.status == "OPEN"))
         return list(result.scalars().all())
 
+    async def get_in_progress_positions(self, db: AsyncSession) -> List[Position]:
+        result = await db.execute(select(Position).where(Position.status == "IN_PROGRESS"))
+        return list(result.scalars().all())
+
     async def get_closed_positions(self, db: AsyncSession) -> List[Position]:
         result = await db.execute(select(Position).where(Position.status == "CLOSED"))
         return list(result.scalars().all())
