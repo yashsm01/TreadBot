@@ -45,6 +45,7 @@ class BreakoutRequest(BaseModel):
 class straddleStartRequest(BaseModel):
     symbol: str = Field(..., description="Trading pair symbol")
     max_trade_limit: float = Field(default=0, description="Maximum trade limit")
+    trade_amount: float = Field(default=0, description="Maximum trade limit")
 
 class CloserRequest(BaseModel):
     symbol: str = Field(..., description="Trading pair symbol")
@@ -237,7 +238,7 @@ async def auto_buy_sell_straddle_start(
     """
     try:
         straddle_service = StraddleService(db)
-        trades = await straddle_service.auto_buy_sell_straddle_start(params.symbol, params.max_trade_limit)
+        trades = await straddle_service.auto_buy_sell_straddle_start(params.symbol, params.max_trade_limit,params.trade_amount)
         return trades
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -278,7 +279,6 @@ async def change_straddle_status(
         return status
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 @router.post("/auto-buy-sell-straddle-inprogress", response_model=TradingStatusResponse)
 async def auto_buy_sell_straddle_inprogress(

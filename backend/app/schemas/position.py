@@ -22,6 +22,7 @@ class PositionCreate(PositionBase):
     realized_pnl: float = 0
     unrealized_pnl: float = 0
     max_trade_limit: float = 0
+    trade_amount: float = 0
 
 class PositionUpdate(BaseModel):
     """Pydantic model for updating a position"""
@@ -63,3 +64,4 @@ class Position(Base):
     open_time = Column(DateTime, default=datetime.utcnow)
     close_time = Column(DateTime, nullable=True)
     max_trade_limit = Column(Float, default=0)
+    trade_amount = Column(Float, default=0)

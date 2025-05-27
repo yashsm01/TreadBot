@@ -167,6 +167,27 @@ class CRUDPortfolio(CRUDBase[Portfolio, PortfolioCreate, PortfolioUpdate]):
             logger.error(f"Error getting portfolio profit summary: {str(e)}")
             return {"portfolios": [], "summary": {}}
 
+    async def update_current_price(self, db: AsyncSession, symbol: str, user_id: int, new_price: float) -> Optional[Portfolio]:
+        """Update the current price for a portfolio entry by symbol and user_id."""
+        try:
+            stmt = select(Portfolio).where(
+                Portfolio.symbol == symbol,
+                Portfolio.user_id == user_id
+            ).order_by(Portfolio.id.desc())
+            result = await db.execute(stmt)
+            portfolio = result.scalars().first()
+            if portfolio:
+                portfolio.current_price = new_price
+                portfolio.last_updated = helpers.get_current_ist_for_db()
+                db.add(portfolio)
+                await db.commit()
+                await db.refresh(portfolio)
+                return portfolio
+            return None
+        except Exception as e:
+            logger.error(f"Error updating current price for {symbol}: {str(e)}")
+            return None
+
 
 # Create instances
 portfolio_crud = CRUDPortfolio(Portfolio)

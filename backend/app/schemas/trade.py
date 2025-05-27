@@ -14,6 +14,8 @@ class TradeBase(BaseModel):
     status: str
     order_type: str = "STOP"
     strategy: Optional[str] = "STRADDLE"
+    buy_pct: float = 0.0
+    sell_pct: float = 0.0
     position_id: Optional[int] = None
 
     @validator('side')

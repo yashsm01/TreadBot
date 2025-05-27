@@ -19,6 +19,7 @@ class Position(Base):
     open_time = Column(DateTime, default=datetime.utcnow)
     close_time = Column(DateTime, nullable=True)
     max_trade_limit = Column(Float, default=0)
+    trade_amount = Column(Float, default=0)
     # created_at = Column(DateTime, default=datetime.utcnow)
     # updated_at = Column(DateTime, default=datetime.utcnow)
 

@@ -3,6 +3,7 @@ from sqlalchemy.sql import text
 from sqlalchemy.exc import SQLAlchemyError
 from app.services.helper.binance_helper import BinanceHelper
 from app.core.exchange.exchange_manager import exchange_manager
+from app.crud.crud_portfolio import portfolio_crud as portfolio_crud
 from datetime import datetime
 import re
 from typing import Optional, Tuple
@@ -309,6 +310,7 @@ async def insert_crypto_data_live(db: AsyncSession, symbol: str, swap_transactio
 
         print(get_price)
         await insert_crypto_data(db, symbol, get_price, swap_transaction_id=swap_transaction_id)
+        await portfolio_crud.update_current_price(db,symbol,1, get_price['current_price'])
         return get_price
     except Exception as e:
         logger.error(f"Critical error in insert_crypto_data_live: {str(e)}")

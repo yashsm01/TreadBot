@@ -14,11 +14,13 @@ class SwapToStableCoinRequest(BaseModel):
     symbol: str = Field(..., description="Cryptocurrency symbol to swap (e.g., 'BTC')")
     quantity: float = Field(..., gt=0, description="Amount to swap")
     current_price: Optional[float] = Field(None, description="Current price (optional, will be fetched if not provided)")
+    position_id: int = Field(None,description="position id (optional, will be fetched if not provided)")
 
 class SwapFromStableCoinRequest(BaseModel):
     stable_coin: str = Field(..., description="Stablecoin symbol (e.g., 'USDT')")
     symbol: str = Field(..., description="Cryptocurrency symbol to buy (e.g., 'BTC')")
     amount: float = Field(..., gt=0, description="Amount of stablecoin to swap")
+    position_id: int = Field(None,description="position id (optional, will be fetched if not provided)")
 
 @router.post("/to-stable", response_model=Dict[str, Any])
 async def swap_to_stable_coin(
@@ -35,7 +37,8 @@ async def swap_to_stable_coin(
         result = await swap_service.swap_symbol_stable_coin(
             symbol=request.symbol,
             quantity=request.quantity,
-            current_price=request.current_price
+            current_price=request.current_price,
+            position_id=request.position_id
         )
 
         if result["status"] == "error" or result["status"] == "failed":
@@ -61,7 +64,8 @@ async def swap_from_stable_coin(
         result = await swap_service.swap_stable_coin_symbol(
             stable_coin=request.stable_coin,
             symbol=request.symbol,
-            amount=request.amount
+            amount=request.amount,
+            position_id=request.position_id
         )
 
         if result["status"] == "error" or result["status"] == "failed":

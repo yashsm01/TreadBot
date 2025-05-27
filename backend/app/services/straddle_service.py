@@ -31,6 +31,172 @@ class StraddleStrategy:
         self.min_confidence = settings.DEFAULT_SL_PCT / 100  # Minimum confidence for breakout signals
         self.position_size = 1.0  # Default position size in base currency
 
+    def calculate_volatility(self, prices: List[float]) -> float:
+        """Calculate volatility as the standard deviation of log returns."""
+        if len(prices) < 2:
+            return 0.0
+        log_returns = np.diff(np.log(prices))
+        return float(np.std(log_returns))
+
+    def calculate_entry_levels_dynamic(
+        self,
+        current_price: float,
+        short_vol: float,
+        medium_vol: float,
+        long_vol: float
+    ) -> dict:
+        """
+        Calculate dynamic entry levels for straddle based on volatility with enhanced precision.
+
+        Features:
+        - Adaptive volatility scaling based on market conditions
+        - 1:3 buy/sell ratio for each timeframe
+        - 1:2:3 ratio between short/medium/long timeframes
+        - Intelligent clamping with market-aware bounds
+        - Comprehensive return data including all calculated percentages
+
+        Args:
+            current_price: Current market price
+            short_vol: Short-term volatility (e.g., 5m intervals)
+            medium_vol: Medium-term volatility (e.g., 1h intervals)
+            long_vol: Long-term volatility (e.g., 4h intervals)
+
+        Returns:
+            dict: Comprehensive entry levels with metadata
+        """
+        try:
+            # Input validation
+            if current_price <= 0:
+                raise ValueError("Current price must be positive")
+
+            # Normalize volatilities to prevent extreme values
+            volatilities = [short_vol, medium_vol, long_vol]
+            avg_vol = sum(volatilities) / len(volatilities) if volatilities else 0.01
+
+            # Use the most conservative (lowest) volatility as base to prevent over-leveraging
+            base_vol = min(volatilities) if all(v > 0 for v in volatilities) else avg_vol
+
+            # Adaptive scaling factor based on overall market volatility
+            if avg_vol > 0.05:  # High volatility market (>5%)
+                scale_factor = 0.8  # Be more conservative
+                min_pct = 0.002  # 0.2%
+                max_pct = 0.015  # 1.5%
+            elif avg_vol > 0.02:  # Medium volatility market (2-5%)
+                scale_factor = 1.0  # Normal scaling
+                min_pct = 0.003  # 0.3%
+                max_pct = 0.02   # 2%
+            else:  # Low volatility market (<2%)
+                scale_factor = 1.2  # Be more aggressive
+                min_pct = 0.005  # 0.5%
+                max_pct = 0.03   # 3%
+
+            # Calculate base percentage with adaptive scaling
+            base_pct = base_vol * scale_factor
+
+            # Ensure minimum viable percentage
+            if base_pct < min_pct:
+                base_pct = min_pct
+
+            # Calculate multipliers to enforce 1:2:3 ratio between timeframes
+            short_pct = base_pct
+            medium_pct = base_pct * 2
+            long_pct = base_pct * 3
+
+            # Intelligent clamping with progressive limits
+            short_pct = max(min(short_pct, max_pct), min_pct)
+            medium_pct = max(min(medium_pct, max_pct * 1.5), min_pct * 1.5)
+            long_pct = max(min(long_pct, max_pct * 2), min_pct * 2)
+
+            # Calculate buy/sell percentages with 1:3 ratio for each timeframe
+            # Buy side (more conservative)
+            short_buy_pct = short_pct
+            medium_buy_pct = medium_pct
+            long_buy_pct = long_pct
+
+            # Sell side (more aggressive, 3x the buy percentage)
+            short_sell_pct = max(min(short_pct * 3, max_pct * 1.2), min_pct)
+            medium_sell_pct = max(min(medium_pct * 3, max_pct * 1.8), min_pct * 1.5)
+            long_sell_pct = max(min(long_pct * 3, max_pct * 2.4), min_pct * 2)
+
+            # Calculate actual entry prices
+            entries = {
+                "short": {
+                    "buy": round(current_price * (1 + short_buy_pct), 8),
+                    "sell": round(current_price * (1 - short_sell_pct), 8),
+                    "buy_pct": round(short_buy_pct * 100, 4),
+                    "sell_pct": round(short_sell_pct * 100, 4),
+                    "volatility": round(short_vol * 100, 4)
+                },
+                "medium": {
+                    "buy": round(current_price * (1 + medium_buy_pct), 8),
+                    "sell": round(current_price * (1 - medium_sell_pct), 8),
+                    "buy_pct": round(medium_buy_pct * 100, 4),
+                    "sell_pct": round(medium_sell_pct * 100, 4),
+                    "volatility": round(medium_vol * 100, 4)
+                },
+                "long": {
+                    "buy": round(current_price * (1 + long_buy_pct), 8),
+                    "sell": round(current_price * (1 - long_sell_pct), 8),
+                    "buy_pct": round(long_buy_pct * 100, 4),
+                    "sell_pct": round(long_sell_pct * 100, 4),
+                    "volatility": round(long_vol * 100, 4)
+                },
+                "metadata": {
+                    "current_price": current_price,
+                    "base_volatility": round(base_vol * 100, 4),
+                    "average_volatility": round(avg_vol * 100, 4),
+                    "scale_factor": scale_factor,
+                    "market_condition": "high_vol" if avg_vol > 0.05 else "medium_vol" if avg_vol > 0.02 else "low_vol",
+                    "min_pct_used": round(min_pct * 100, 4),
+                    "max_pct_used": round(max_pct * 100, 4),
+                    "calculation_timestamp": datetime.now().isoformat()
+                }
+            }
+
+            # Validation: Ensure buy > current > sell for all timeframes
+            for timeframe in ["short", "medium", "long"]:
+                if entries[timeframe]["buy"] <= current_price:
+                    entries[timeframe]["buy"] = current_price * (1 + min_pct)
+                    entries[timeframe]["buy_pct"] = round(min_pct * 100, 4)
+
+                if entries[timeframe]["sell"] >= current_price:
+                    entries[timeframe]["sell"] = current_price * (1 - min_pct)
+                    entries[timeframe]["sell_pct"] = round(min_pct * 100, 4)
+
+            return entries
+
+        except Exception as e:
+            # Fallback to conservative static values if calculation fails
+            fallback_pct = 0.01  # 1%
+            return {
+                "short": {
+                    "buy": current_price * (1 + fallback_pct),
+                    "sell": current_price * (1 - fallback_pct * 2),
+                    "buy_pct": fallback_pct * 100,
+                    "sell_pct": fallback_pct * 2 * 100,
+                    "volatility": 0
+                },
+                "medium": {
+                    "buy": current_price * (1 + fallback_pct * 1.5),
+                    "sell": current_price * (1 - fallback_pct * 3),
+                    "buy_pct": fallback_pct * 1.5 * 100,
+                    "sell_pct": fallback_pct * 3 * 100,
+                    "volatility": 0
+                },
+                "long": {
+                    "buy": current_price * (1 + fallback_pct * 2),
+                    "sell": current_price * (1 - fallback_pct * 4),
+                    "buy_pct": fallback_pct * 2 * 100,
+                    "sell_pct": fallback_pct * 4 * 100,
+                    "volatility": 0
+                },
+                "metadata": {
+                    "current_price": current_price,
+                    "error": str(e),
+                    "fallback_used": True,
+                    "calculation_timestamp": datetime.now().isoformat()
+                }
+            }
 
     def calculate_entry_levels(self, current_price: float) -> Tuple[float, float]:
         """Calculate entry levels for straddle"""
@@ -38,7 +204,7 @@ class StraddleStrategy:
         sell_entry = current_price * (1 - self.min_confidence)
         return buy_entry, sell_entry
 
-    def calculate_position_params(self, entry_price: float, direction: str) -> Tuple[float, float]:
+    def calculate_position_params(self, entry_price: float, short_buy_pct: float, short_sell_pct: float, direction: str) -> Tuple[float, float]:
         """Calculate TP and SL as percentage-based price deltas."""
 
         if entry_price <= 0:
@@ -48,8 +214,8 @@ class StraddleStrategy:
         if direction not in ("UP", "DOWN"):
             raise ValueError("Direction must be 'UP' or 'DOWN'.")
 
-        tp_pct = settings.DEFAULT_TP_PCT  # Example: 0.01 for 1%
-        sl_pct = settings.DEFAULT_SL_PCT  # Example: 0.01 for 1%
+        tp_pct = short_buy_pct  # Example: 0.01 for 1%
+        sl_pct = short_sell_pct  # Example: 0.01 for 1%
 
         tp_amount = (entry_price * tp_pct)/ 100
         sl_amount = (entry_price * sl_pct)/ 100
@@ -67,7 +233,7 @@ class StraddleStrategy:
         # 1. Momentum Check
         # Add additional buying conditions using log returns:
         # Positive momentum in recent log returns
-        positive_momentum = np.sum(short_term_changes[-5:]) > 0
+        positive_momentum = np.sum(short_term_changes[-20:]) > 0
 
         # 2. Increasing trading volume spike
         volume_confirms = relative_volume > 1.1
@@ -76,8 +242,8 @@ class StraddleStrategy:
         near_support = any(price > s for s in support_levels)
 
         # 4. Resistance Safe: Not approaching immediate resistance
-        not_near_resistance = all(price < r * 0.95 for r in resistance_levels)
-
+        # not_near_resistance = all(price < r * 0.95 for r in resistance_levels)
+        not_near_resistance = True
         return (
             positive_momentum and
             volume_confirms and
@@ -157,10 +323,29 @@ class StraddleService:
                                f"Minimum quantity: {min_quantity}, minimum trade value: $10.00. "
                                f"Current trade value: ${trade_value:.2f}")
 
-            buy_entry, sell_entry = self.strategy.calculate_entry_levels(current_price)
+            # Fetch historical close prices from Binance for volatility calculation
+            price_history_result = await binance_helper.get_dynamic_price_history(symbol, interval="5m", intervals=50)
+            close_prices = [entry["close"] for entry in price_history_result["data"]["history"]]
+
+            short_term_prices = close_prices
+            medium_term_prices = close_prices
+            long_term_prices = close_prices
+
+            short_vol = self.strategy.calculate_volatility(short_term_prices)
+            medium_vol = self.strategy.calculate_volatility(medium_term_prices)
+            long_vol = self.strategy.calculate_volatility(long_term_prices)
+
+            entry_levels = self.strategy.calculate_entry_levels_dynamic(
+                current_price, short_vol, medium_vol, long_vol
+            )
+
+            buy_entry = entry_levels['short']['buy']
+            sell_entry = entry_levels['short']['sell']
+            short_buy_pct = entry_levels['short']['buy_pct']
+            short_sell_pct = entry_levels['short']['sell_pct']
 
             # Create buy stop order
-            buy_tp, buy_sl = self.strategy.calculate_position_params(buy_entry, "UP")
+            buy_tp, buy_sl = self.strategy.calculate_position_params(buy_entry,short_buy_pct,short_sell_pct, "UP")
             long_trade = TradeCreate(
                 symbol=symbol,
                 side="BUY",
@@ -171,12 +356,14 @@ class StraddleService:
                 stop_loss=buy_sl,
                 status="PENDING",
                 order_type="STOP",
+                buy_pct= short_buy_pct,
+                sell_pct= short_sell_pct,
                 position_id=position_id
             )
             long_trade_db = await trade_crud.create(self.db, obj_in=long_trade)
 
             # Create sell stop order
-            sell_tp, sell_sl = self.strategy.calculate_position_params(sell_entry, "DOWN")
+            sell_tp, sell_sl = self.strategy.calculate_position_params(sell_entry,short_buy_pct,short_sell_pct, "DOWN")
             short_trade = TradeCreate(
                 symbol=symbol,
                 side="SELL",
@@ -187,6 +374,8 @@ class StraddleService:
                 stop_loss=sell_sl,
                 status="PENDING",
                 order_type="STOP",
+                buy_pct= short_buy_pct,
+                sell_pct= short_sell_pct,
                 position_id=position_id
             )
             short_trade_db = await trade_crud.create(self.db, obj_in=short_trade)
@@ -393,7 +582,7 @@ class StraddleService:
             self.db, symbol=symbol, status=["OPEN"]
         )
 
-    async def auto_buy_sell_straddle_start(self, symbol: str, max_trade_limit: float) -> List[Trade]:
+    async def auto_buy_sell_straddle_start(self, symbol: str, max_trade_limit: float,trade_amount: float) -> List[Trade]:
         """Auto buy or sell straddle based on market conditions"""
         try:
             #get current price
@@ -437,7 +626,8 @@ class StraddleService:
                 average_entry_price=buy_entry,
                 realized_pnl=0,
                 unrealized_pnl=0,
-                max_trade_limit=max_trade_limit
+                max_trade_limit=max_trade_limit,
+                trade_amount=trade_amount
             )
             position_db = await position_crud.create(self.db, obj_in=position)
 
@@ -469,7 +659,7 @@ class StraddleService:
 
             # Close the trades
             closed_trades = await self.close_straddle_trades(symbol)
-
+            await self.db.refresh(position)
             # Update position status
             if position:
                 updated_position = await position_crud.update(
@@ -981,6 +1171,7 @@ class StraddleService:
 
             position_id = open_positions.id
             max_trade_limit = open_positions.max_trade_limit
+            trade_amount = open_positions.trade_amount
             if open_positions.status == "CLOSED":
                 logger.info(f"Straddle position already closed for {symbol}, skipping auto buy/sell")
                 response["status"] = "CLOSED"
@@ -1592,6 +1783,11 @@ class StraddleService:
                                 should_swap_back = True
                                 swap_back_percentage += 0.1
 
+                        # close old trades
+                        closed_trades = await self.close_straddle_trades(symbol)
+                        # create new straddle trades
+                        new_trades = await self.create_straddle_trades(symbol, current_price, quantity, position_id)
+
                         # Cap the percentage (higher cap in zero quantity mode)
                         max_percentage = 0.9 if zero_quantity_mode else 0.7
                         swap_back_percentage = min(max_percentage, swap_back_percentage)
@@ -1603,8 +1799,9 @@ class StraddleService:
                                 swap_back_percentage = 0.8  # Use 80% of stablecoin for initial crypto purchase
 
                             swap_back_percentage = 1
-                            swap_amount = max(largest_amount * swap_back_percentage, max_trade_limit)
-                            if swap_amount > 0:
+                            crypto_amount = (trade_amount * current_price) / 1
+                            swap_amount = min(crypto_amount * swap_back_percentage, largest_amount)
+                            if swap_amount > 0 and swap_amount > protfolo_details.max_trade_limit:
                                 swap_reason = "Zero quantity mode - initial crypto purchase" if zero_quantity_mode else "Detected trend reversal"
                                 logger.info(f"Swapping {swap_back_percentage*100:.1f}% from {best_stable_to_swap_from} to {symbol}: {swap_reason}")
 

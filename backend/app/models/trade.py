@@ -31,6 +31,8 @@ class Trade(Base):
     realized_pnl = Column(Float, nullable=True)
     unrealized_pnl = Column(Float, nullable=True)
     status = Column(String)  # "PENDING", "OPEN", "CLOSED", "CANCELLED"
+    buy_pct = Column(Float, default=0.0)
+    sell_pct = Column(Float, default=0.0)
     position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)
     current_price = Column(Float, nullable=True)
 

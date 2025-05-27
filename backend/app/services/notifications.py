@@ -117,9 +117,9 @@ class NotificationService:
         try:
             message = (
                 f"🔄 New Straddle Setup for {symbol}\n"
-                f"Current Price: ${current_price:.2f}\n"
-                f"Buy Stop: ${buy_entry:.2f}\n"
-                f"Sell Stop: ${sell_entry:.2f}\n"
+                f"Current Price: ${current_price:.5f}\n"
+                f"Buy Stop: ${buy_entry:.5f}\n"
+                f"Sell Stop: ${sell_entry:.5f}\n"
                 f"Position Size: {quantity}"
             )
             await self.send_message(message)
@@ -185,6 +185,12 @@ class NotificationService:
                 trend_strength = metrics.get('trend_strength', 0)
                 volatility = metrics.get('volatility', 0)
 
+                # Get thresholds and percentages
+                profit_threshold = metrics.get('profit_threshold', 0)
+                profit_threshold_small = metrics.get('profit_threshold_small', 0)
+                profit_threshold_medium = metrics.get('profit_threshold_medium', 0)
+                profit_threshold_large = metrics.get('profit_threshold_large', 0)
+
                 # Escape trend direction
                 trend_direction_escaped = self._escape_markdown(trend_direction)
 
@@ -197,7 +203,21 @@ class NotificationService:
                 has_portfolio_summary = len(portfolio_summary) > 0
 
                 # Add appropriate emoji based on status
-                status_emoji = "✅" if status in ["INITIATED", "RECREATED"] else "⚠️" if status in ["SKIPPED", "DISABLED"] else "❌" if status == "CLOSED" else "💤" if status == "IDLE" else "❓"
+                status_emoji = {
+                    "INITIATED": "🚀",
+                    "RECREATED": "🔄",
+                    "PROFIT_TAKEN": "💰",
+                    "SWAP_PERFORMED": "🔄",
+                    "MONITORING": "👀",
+                    "ZERO_QUANTITY_MONITORING": "⚠️",
+                    "SKIPPED": "⏭️",
+                    "DISABLED": "🚫",
+                    "CLOSED": "🔒",
+                    "IDLE": "💤",
+                    "ERROR": "❌",
+                    "NO_POSITION": "📭",
+                    "INSUFFICIENT_QUANTITY": "⚠️"
+                }.get(status, "❓")
 
                 # Add emoji for trend
                 trend_emoji = "📈" if trend_direction == "up" else "📉" if trend_direction == "down" else "↔️"
@@ -205,30 +225,38 @@ class NotificationService:
                 # Add emoji for profit/loss
                 pnl_emoji = "🟢" if profit_loss > 0 else "🔴" if profit_loss < 0 else "⚪"
 
-                # Format the message with Markdown
+                # Get current timestamp
+                current_time = datetime.now().strftime("%H:%M:%S")
+
+                # Format the message with enhanced structure
                 message = (
-                    f"{status_emoji} *Straddle Status Update for {symbol_escaped}*\n\n"
-                    f"*Status:* {status_escaped}\n"
+                    f"🤖 {symbol_escaped} *STRADDLE BOT UPDATE* 🤖\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🕐 *Time:* {current_time}\n"
+                    f"💎 *Symbol:* {symbol_escaped}\n"
+                    f"{status_emoji} *Status:* {status_escaped}\n"
                 )
 
                 # Add reason if present
                 if trading_status.get('reason'):
                     reason_escaped = self._escape_markdown(trading_status['reason'])
-                    message += f"*Reason:* {reason_escaped}\n"
+                    message += f"📝 *Reason:* {reason_escaped}\n"
+
+                message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
                 # Add portfolio summary info if available
                 if has_portfolio_summary and status not in ["ERROR"]:
                     message += (
-                        f"\n*Portfolio Summary:*\n"
-                        f"Total Value: ${portfolio_summary.get('total_value', 0):,.2f}\n"
-                        f"P/L: {pnl_emoji} ${portfolio_summary.get('total_profit_loss', 0):,.2f} "
+                        f"💼 *PORTFOLIO OVERVIEW*\n"
+                        f"💰 Total Value: ${portfolio_summary.get('total_value', 0):,.2f}\n"
+                        f"📊 P/L: {pnl_emoji} ${portfolio_summary.get('total_profit_loss', 0):,.2f} "
                         f"({portfolio_summary.get('total_profit_loss_percentage', 0):+.2f}%)\n"
                     )
 
                     # Add daily change if available
                     if portfolio_summary.get('daily_change') is not None:
                         daily_emoji = "📈" if portfolio_summary['daily_change'] > 0 else "📉"
-                        message += f"Daily Change: {daily_emoji} {portfolio_summary['daily_change']:+.2f}%\n"
+                        message += f"📅 Daily Change: {daily_emoji} {portfolio_summary['daily_change']:+.2f}%\n"
 
                     # Add asset distribution
                     crypto_value = portfolio_summary.get('crypto_value', 0)
@@ -237,41 +265,97 @@ class NotificationService:
                     if total > 0:
                         crypto_pct = (crypto_value / total) * 100
                         stable_pct = (stable_value / total) * 100
-                        message += f"Crypto: {crypto_pct:.1f}% | Stable: {stable_pct:.1f}%\n"
+                        message += f"🔄 Distribution: 🪙 {crypto_pct:.1f}% | 💵 {stable_pct:.1f}%\n"
+
+                    message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
                 # Add position metrics if we have a valid position
                 if current_price > 0 and status not in ["NO_POSITION"]:
                     # Price and position info
                     message += (
-                        f"\n*Position Details:*\n"
-                        f"Size: {position_size:,.8f}\n"
-                        f"Entry Price: ${starting_price:,.8f}\n"
-                        f"Total Entry Price: ${starting_price * position_size:,.8f}\n"
-                        f"Current Price: ${current_price:,.8f}\n"
-                        f"Total Price: ${current_price * position_size:,.8f}\n"
-                        f"PnL: {pnl_emoji} ${profit_loss:,.2f} ({profit_loss_percent:+.2f}%)\n"
+                        f"📍 *POSITION DETAILS*\n"
+                        f"📏 Size: {position_size:,.8f} {symbol_escaped}\n"
+                        f"🎯 Entry Price: ${starting_price:,.8f}\n"
+                        f"💵 Entry Value: ${starting_price * position_size:,.2f}\n"
+                        f"💲 Current Price: ${current_price:,.8f}\n"
+                        f"💰 Current Value: ${current_price * position_size:,.2f}\n"
+                        f"📈 P/L: {pnl_emoji} ${profit_loss:,.2f} ({profit_loss_percent:+.2f}%)\n"
                     )
+
+                    # Add buy/sell trade entry prices if available
+                    buy_trades = metrics.get("buy_trades", [])
+                    sell_trades = metrics.get("sell_trades", [])
+
+                    if buy_trades and isinstance(buy_trades, list) and len(buy_trades) > 0:
+                        buy_trade = buy_trades[0]
+                        if "entry_price" in buy_trade:
+                            message += f"🟢 Buy Entry: ${buy_trade['entry_price']:.8f}\n"
+                            if "take_profit" in buy_trade:
+                                message += f"🎯 Buy TP: ${buy_trade['take_profit']:.8f}\n"
+                            if "stop_loss" in buy_trade:
+                                message += f"🛑 Buy SL: ${buy_trade['stop_loss']:.8f}\n"
+
+                    if sell_trades and isinstance(sell_trades, list) and len(sell_trades) > 0:
+                        sell_trade = sell_trades[0]
+                        if "entry_price" in sell_trade:
+                            message += f"🔴 Sell Entry: ${sell_trade['entry_price']:.8f}\n"
+                            if "take_profit" in sell_trade:
+                                message += f"🎯 Sell TP: ${sell_trade['take_profit']:.8f}\n"
+                            if "stop_loss" in sell_trade:
+                                message += f"🛑 Sell SL: ${sell_trade['stop_loss']:.8f}\n"
+
+                    message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
                     # Add trend analysis if available
                     if trend_direction:
                         message += (
-                            f"\n*Market Trend:*\n"
-                            f"Direction: {trend_emoji} {trend_direction_escaped.upper()}\n"
-                            f"Strength: {'🔥' if trend_strength >= 3 else '✨' if trend_strength >= 2 else '🌱' if trend_strength >= 1 else '💤'} {trend_strength}/5\n"
-                            f"Volatility: {'🌋' if volatility >= 0.03 else '🌊' if volatility >= 0.015 else '🌱'} {volatility:.2%}\n"
+                            f"📊 *MARKET ANALYSIS*\n"
+                            f"📈 Direction: {trend_emoji} {trend_direction_escaped.upper()}\n"
+                            f"💪 Strength: {'🔥' if trend_strength >= 3 else '✨' if trend_strength >= 2 else '🌱' if trend_strength >= 1 else '💤'} {trend_strength}/5\n"
+                            f"🌊 Volatility: {'🌋' if volatility >= 0.03 else '🌊' if volatility >= 0.015 else '🌱'} {volatility:.2%}\n"
                         )
+
+                        # Add threshold information
+                        if profit_threshold > 0:
+                            message += f"🎯 Active Threshold: {profit_threshold:.2%}\n"
+
+                        if profit_threshold_small > 0:
+                            message += (
+                                f"📏 Thresholds: "
+                                f"S:{profit_threshold_small:.2%} | "
+                                f"M:{profit_threshold_medium:.2%} | "
+                                f"L:{profit_threshold_large:.2%}\n"
+                            )
+
+                        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
                     # Add swap info if a swap was performed
                     if swap_performed:
                         from_coin_escaped = self._escape_markdown(swap.get('from_coin', ''))
                         to_coin_escaped = self._escape_markdown(swap.get('to_coin', ''))
+                        swap_reason_escaped = self._escape_markdown(swap.get('reason', ''))
                         message += (
-                            f"\n*Swap Performed:*\n"
-                            f"From: {from_coin_escaped}\n"
-                            f"To: {to_coin_escaped}\n"
-                            f"Amount: {swap.get('amount', 0):,.6f}\n"
-                            f"Price: ${swap.get('price', 0):,.2f}\n"
+                            f"🔄 *SWAP EXECUTED*\n"
+                            f"📤 From: {from_coin_escaped}\n"
+                            f"📥 To: {to_coin_escaped}\n"
+                            f"💰 Amount: {swap.get('amount', 0):,.6f}\n"
+                            f"💲 Price: ${swap.get('price', 0):,.2f}\n"
+                            f"📝 Reason: {swap_reason_escaped}\n"
+                            f"📊 Percentage: {swap.get('percentage', 0):.1f}%\n"
                         )
+                        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+                # Add suggestions if available
+                suggestions = trading_status.get('suggestions', [])
+                if suggestions:
+                    message += "💡 *SUGGESTIONS*\n"
+                    for i, suggestion in enumerate(suggestions[:3], 1):  # Limit to 3 suggestions
+                        suggestion_escaped = self._escape_markdown(suggestion)
+                        message += f"{i}. {suggestion_escaped}\n"
+                    message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+                # Add footer
+                message += f"🤖 *Automated Trading System* | Status: {'🟢 Active' if status not in ['DISABLED', 'ERROR'] else '🔴 Inactive'}"
 
                 # Use a fresh database session for sending the message to avoid transaction issues
                 try:
@@ -301,7 +385,7 @@ class NotificationService:
                                     logger.error(f"Failed to send message to user {user.id}: {str(msg_error)}")
 
                             if success_count > 0:
-                                logger.info(f"Straddle status notification sent to {success_count}/{len(active_users)} users")
+                                logger.info(f"Enhanced straddle status notification sent to {success_count}/{len(active_users)} users")
                                 return True
                             else:
                                 logger.warning(f"Failed to send notification to any users")
@@ -315,7 +399,7 @@ class NotificationService:
                         # Fallback to regular send_message if direct approach not available
                         result = await telegram_service.send_message(message)
                         if result:
-                            logger.info(f"Successfully sent straddle status notification for {symbol}")
+                            logger.info(f"Successfully sent enhanced straddle status notification for {symbol}")
                             return True
                         else:
                             if retries < max_retries - 1:

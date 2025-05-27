@@ -431,7 +431,7 @@ class BinanceHelper:
                 limit=intervals
             )
 
-            if not klines or len(klines) < intervals:
+            if not klines or len(klines) < 10:
                 raise BinanceAPIException(f"Insufficient kline data. Required: {intervals}, Got: {len(klines) if klines else 0}")
 
             # Process each kline into a price entry

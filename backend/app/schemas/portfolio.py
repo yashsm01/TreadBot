@@ -26,6 +26,7 @@ class PortfolioUpdate(BaseModel):
     avg_buy_price: Optional[float] = None
     realized_profit: Optional[float] = None
     last_updated: Optional[datetime] = None
+    current_price: Optional[float] = None
 
 class PortfolioPosition(BaseModel):
     symbol: str
