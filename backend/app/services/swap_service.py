@@ -14,8 +14,9 @@ from app.models.portfolio import Portfolio  # Add import for direct database mod
 from app.models.swap_transaction import SwapTransaction  # Add import for swap transaction model
 from app.crud.curd_crypto import insert_crypto_data_live
 
-#middleware
-from app.middleware.one_inch_token_handler import one_inch_client
+
+from app.services.oneinch_service import oneinch_service
+import requests
 
 class SwapService:
     def __init__(self, db: AsyncSession):
@@ -432,19 +433,193 @@ class SwapService:
                 "error_details": str(e)
             }
 
-    async def get_token():
+    async def get_token(self):
+        """Get available tokens from 1inch API"""
         try:
-             # Get Ethereum (chain ID 1) tokens
-            tokens = await one_inch_client.get("/swap/v5.2/1/tokens")
-            print(f"Found {len(tokens.get('tokens', {}))} tokens on Ethereum")
+            if not settings.SWAP_ENABLED:
+                return {"status": "disabled", "message": "Swaps are disabled"}
 
-            # Print the first 3 tokens for example
-            for i, (token_address, token_info) in enumerate(list(tokens.get('tokens', {}).items())[:3]):
-                print(f"Token {i+1}: {token_info.get('symbol')} - {token_info.get('name')}")
+            # Use the 1inch tokens endpoint
+            url = f"https://api.1inch.dev/swap/v6.0/{oneinch_service.chain_id}/tokens"
 
-            return tokens
+            response = requests.get(url, headers=oneinch_service.headers)
+            response.raise_for_status()
+
+            tokens_data = response.json()
+            tokens = tokens_data.get('tokens', {})
+
+            logger.info(f"Found {len(tokens)} tokens on chain {oneinch_service.chain_id}")
+
+            # Return formatted token list
+            formatted_tokens = []
+            for token_address, token_info in list(tokens.items())[:10]:  # Limit to first 10 for example
+                formatted_tokens.append({
+                    "address": token_address,
+                    "symbol": token_info.get('symbol'),
+                    "name": token_info.get('name'),
+                    "decimals": token_info.get('decimals')
+                })
+
+            return {
+                "status": "success",
+                "total_tokens": len(tokens),
+                "sample_tokens": formatted_tokens,
+                "chain_id": oneinch_service.chain_id
+            }
+
         except Exception as e:
             logger.error(f"Error getting tokens: {e}")
             return {"status": "error", "message": f"Error getting tokens: {str(e)}"}
+
+    async def execute_real_swap(self,
+                               from_symbol: str,
+                               to_symbol: str,
+                               amount: float,
+                               position_id: int) -> Dict:
+        """Execute real swap using 1inch API"""
+        try:
+            if not settings.SWAP_ENABLED:
+                logger.warning("Real swaps are disabled, using simulation")
+                return await self.simulate_swap(from_symbol, to_symbol, amount, position_id)
+
+            # Convert amount to wei (assuming 18 decimals for most tokens)
+            amount_wei = str(int(amount * 10**18))
+
+            # Execute swap via 1inch
+            if to_symbol in ['USDT', 'USDC', 'BUSD']:
+                # Crypto to stable
+                result = await oneinch_service.swap_crypto_to_stable(
+                    crypto_symbol=from_symbol,
+                    stable_symbol=to_symbol,
+                    amount=amount_wei,
+                    slippage=settings.DEFAULT_SLIPPAGE
+                )
+            else:
+                # Stable to crypto or crypto to crypto
+                result = await oneinch_service.execute_swap(
+                    src_token=oneinch_service.get_token_address(from_symbol),
+                    dst_token=oneinch_service.get_token_address(to_symbol),
+                    amount=amount_wei,
+                    slippage=settings.DEFAULT_SLIPPAGE
+                )
+
+            if result.get("success"):
+                # Create swap transaction record
+                swap_transaction = SwapTransactionCreate(
+                    from_symbol=from_symbol,
+                    to_symbol=to_symbol,
+                    from_amount=amount,
+                    to_amount=0,  # Will be updated when transaction is confirmed
+                    exchange_rate=0,  # Will be calculated
+                    transaction_hash=result.get("swap_tx_hash"),
+                    status="PENDING",
+                    position_id=position_id,
+                    swap_type="REAL_1INCH"
+                )
+
+                swap_record = await swap_transaction_crud.create(self.db, obj_in=swap_transaction)
+
+                logger.info(f"Real swap executed: {from_symbol} -> {to_symbol}, TX: {result.get('swap_tx_hash')}")
+
+                return {
+                    "success": True,
+                    "transaction": {
+                        "transaction_id": swap_record.id,
+                        "transaction_hash": result.get("swap_tx_hash"),
+                        "from_symbol": from_symbol,
+                        "to_symbol": to_symbol,
+                        "from_amount": amount,
+                        "status": "PENDING",
+                        "swap_type": "REAL_1INCH"
+                    },
+                    "oneinch_result": result
+                }
+            else:
+                logger.error(f"1inch swap failed: {result.get('error')}")
+                # Fallback to simulation
+                return await self.simulate_swap(from_symbol, to_symbol, amount, position_id)
+
+        except Exception as e:
+            logger.error(f"Error in real swap execution: {str(e)}")
+            # Fallback to simulation
+            return await self.simulate_swap(from_symbol, to_symbol, amount, position_id)
+
+    async def simulate_swap(self,
+                           from_symbol: str,
+                           to_symbol: str,
+                           amount: float,
+                           position_id: int) -> Dict:
+        """Simulate swap without actual execution (fallback method)"""
+        try:
+            logger.info(f"Simulating swap: {amount} {from_symbol} -> {to_symbol}")
+
+            # Use existing swap logic but mark as simulation
+            if to_symbol in ['USDT', 'USDC', 'BUSD']:
+                # Crypto to stable simulation
+                result = await self.swap_symbol_stable_coin(
+                    symbol=from_symbol,
+                    quantity=amount,
+                    current_price=None,  # Will be fetched
+                    target_stablecoin=to_symbol,
+                    position_id=position_id
+                )
+            else:
+                # Stable to crypto simulation
+                result = await self.swap_stable_coin_symbol(
+                    stable_coin=from_symbol,
+                    symbol=to_symbol,
+                    amount=amount,
+                    position_id=position_id
+                )
+
+            # Mark as simulation
+            if result.get("status") == "success":
+                result["swap_type"] = "SIMULATION"
+                result["transaction"]["swap_type"] = "SIMULATION"
+                logger.info(f"Simulation completed: {from_symbol} -> {to_symbol}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in swap simulation: {str(e)}")
+            return {
+                "success": False,
+                "status": "error",
+                "error": str(e),
+                "swap_type": "SIMULATION"
+            }
+
+    async def get_swap_quote(self,
+                            from_symbol: str,
+                            to_symbol: str,
+                            amount: float) -> Dict:
+        """Get swap quote from 1inch"""
+        try:
+            if not settings.SWAP_ENABLED:
+                return {"error": "Swaps are disabled"}
+
+            amount_wei = str(int(amount * 10**18))
+            src_token = oneinch_service.get_token_address(from_symbol)
+            dst_token = oneinch_service.get_token_address(to_symbol)
+
+            quote = await oneinch_service.get_quote(src_token, dst_token, amount_wei)
+
+            # Convert back from wei
+            dst_amount = float(quote.get("dstAmount", 0)) / 10**18
+
+            return {
+                "success": True,
+                "from_symbol": from_symbol,
+                "to_symbol": to_symbol,
+                "from_amount": amount,
+                "to_amount": dst_amount,
+                "exchange_rate": dst_amount / amount if amount > 0 else 0,
+                "quote_data": quote
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting swap quote: {str(e)}")
+            return {"success": False, "error": str(e)}
+
 swap_service = SwapService(None)
 

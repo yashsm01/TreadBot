@@ -199,10 +199,11 @@ class SchedulerService:
             # Get the telegram service singleton
             telegram_service = TelegramService.get_instance(db=self.db)
 
-            # Ensure telegram service is initialized
+            # Don't try to initialize here - use the already initialized singleton
+            # The telegram service should be initialized in main.py startup
             if not telegram_service._initialized:
-                logger.warning("Telegram service not initialized, attempting to initialize in scheduler")
-                await telegram_service.initialize()
+                logger.debug("Telegram service not initialized, skipping telegram notifications in scheduler")
+                # Continue without telegram notifications rather than trying to initialize
 
             straddle_service = StraddleService(self.db)
             #get in progress positions
@@ -378,10 +379,11 @@ class SchedulerService:
             # Get the telegram service singleton
             telegram_service = TelegramService.get_instance(db=self.db)
 
-            # Ensure telegram service is initialized
+            # Don't try to initialize here - use the already initialized singleton
+            # The telegram service should be initialized in main.py startup
             if not telegram_service._initialized:
-                logger.warning("Telegram service not initialized, attempting to initialize in auto trading")
-                await telegram_service.initialize()
+                logger.debug("Telegram service not initialized, skipping telegram notifications in auto trading")
+                # Continue without telegram notifications rather than trying to initialize
 
             straddle_service = StraddleService(self.db)
             trading_status = await straddle_service.auto_buy_sell_straddle_inprogress('DOGE/USDT')

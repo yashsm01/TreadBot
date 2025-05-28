@@ -31,15 +31,10 @@ class NotificationService:
             if self.db and not self.telegram_service.db:
                 self.telegram_service.db = self.db
 
-            # Check if the service is initialized, if not try to initialize it
+            # Don't try to initialize here - should be done in main.py startup
             if not self.telegram_service._initialized:
-                logger.warning("Telegram service not initialized, attempting to initialize now")
-                try:
-                    await self.telegram_service.initialize()
-                    if self.telegram_service._initialized:
-                        logger.info("Successfully initialized Telegram service")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Telegram service: {str(e)}")
+                logger.debug("Telegram service not initialized, notifications will be skipped")
+                # Don't try to initialize here to avoid conflicts
 
         return self.telegram_service
 

@@ -125,6 +125,19 @@ class TelegramService:
                 return False
 
             logger.info("Initializing Telegram bot...")
+
+            # Clear any existing webhook to ensure polling works
+            try:
+                import requests
+                webhook_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/deleteWebhook"
+                webhook_response = requests.post(webhook_url, json={"drop_pending_updates": True}, timeout=10)
+                if webhook_response.status_code == 200:
+                    logger.info("Cleared any existing Telegram webhook")
+                else:
+                    logger.warning(f"Failed to clear webhook: {webhook_response.status_code}")
+            except Exception as e:
+                logger.warning(f"Could not clear webhook: {str(e)}")
+
             self.application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
 
             # Add command handlers
@@ -169,18 +182,39 @@ class TelegramService:
             await self.application.initialize()
             await self.application.start()
 
-            # Start polling for updates
+            # Start polling for updates with error handling
             logger.info("Starting Telegram polling...")
-            await self.application.updater.start_polling()
+            try:
+                await self.application.updater.start_polling(
+                    drop_pending_updates=True,  # Drop any pending updates to avoid conflicts
+                    poll_interval=1.0,  # Poll every second
+                    timeout=10  # 10 second timeout for long polling
+                )
+            except Exception as polling_error:
+                if "Conflict" in str(polling_error):
+                    logger.error("Telegram polling conflict detected. Another bot instance may be running.")
+                    logger.error("Please stop all other instances and restart the application.")
+                raise polling_error
 
             self._initialized = True
             logger.info("Telegram bot initialized successfully")
             return True
+
         except Exception as e:
             logger.error(f"Failed to initialize Telegram bot: {str(e)}")
             self._initialized = False
             # Release the instance_running lock
             TelegramService._instance_running = False
+
+            # Provide specific guidance for common errors
+            if "Conflict" in str(e):
+                logger.error("TELEGRAM CONFLICT ERROR:")
+                logger.error("This usually means another instance of the bot is already running.")
+                logger.error("Solutions:")
+                logger.error("1. Stop all other instances of your application")
+                logger.error("2. Run: python backend/fix_telegram_conflict.py")
+                logger.error("3. Restart your application")
+
             # Don't raise the exception, just continue without Telegram functionality
             return False
 

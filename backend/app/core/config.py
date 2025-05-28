@@ -94,8 +94,16 @@ class Settings(BaseSettings):
     BINANCE_API_KEY: str = ""  # Add your API key here
     BINANCE_SECRET_KEY: str = ""  # Add your secret key here
 
-    # 1inch API Key
+    # 1inch API Configuration
     ONEINCH_API_KEY: str = "5udQ29Up3xGdnF4LNA2EDLm3QjKovqD3"
+    ONEINCH_CHAIN_ID: int = 56  # BSC by default
+    WEB3_RPC_URL: str = "https://bsc-dataseed.binance.org"
+    WALLET_ADDRESS: str = "0xa4347297A0a7a3e727b92EE23F954132A2c97a1A"
+    PRIVATE_KEY: str = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+    # Swap Configuration
+    DEFAULT_SLIPPAGE: float = 1.0  # 1% slippage
+    SWAP_ENABLED: bool = True  # Enable/disable actual swaps
 
     class Config:
         env_file = ".env"
