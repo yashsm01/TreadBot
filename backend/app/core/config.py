@@ -96,10 +96,13 @@ class Settings(BaseSettings):
 
     # 1inch API Configuration
     ONEINCH_API_KEY: str = "5udQ29Up3xGdnF4LNA2EDLm3QjKovqD3"
-    ONEINCH_CHAIN_ID: int = 56  # BSC by default
-    WEB3_RPC_URL: str = "https://bsc-dataseed.binance.org"
-    WALLET_ADDRESS: str = "0xa4347297A0a7a3e727b92EE23F954132A2c97a1A"
-    PRIVATE_KEY: str = "0x0000000000000000000000000000000000000000000000000000000000000000"
+    # ONEINCH_CHAIN_ID: int = 56  # BSC by default
+    ONEINCH_CHAIN_ID: int = 137 # Polygon
+    # WEB3_RPC_URL: str = "https://bsc-dataseed.binance.org"
+    WEB3_RPC_URL: str = "https://polygon-rpc.com"
+
+    WALLET_ADDRESS: str = "0x3b8ecE3395c6e44A29835eea0074736aE861F8fe"  # Updated to user's Trust Wallet address
+    PRIVATE_KEY: str = "0x0000000000000000000000000000000000000000000000000000000000000000"  # You need to add your private key here
 
     # Swap Configuration
     DEFAULT_SLIPPAGE: float = 1.0  # 1% slippage
