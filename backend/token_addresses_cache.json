@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-05-28T01:00:24.031655",
+  "timestamp": "2025-06-17T00:04:08.193266",
   "tokens": {
     "BABY": "0x53e562b9b7e5e94b81f10e96ee70ad06df3d2657",
     "MDX": "0x9c65ab58d8d978db963e63f2bfb7121627e3a739",
@@ -29,6 +29,7 @@
     "FET": "0x031b41e504677879370e9dbcf937283a8691fa7f",
     "BNBX": "0x1bdd3cf7f79cfb8edbb955f20ad99211551ba275",
     "DAO": "0x4d2d32d8652058bf98c772953e1df5c5c85d9f45",
+    "KOGE": "0xe6df05ce8c8301223373cf5b969afcb1498c5528",
     "BTBS": "0x6fefd97f328342a8a840546a55fdcfee7542f9a8",
     "ZIX": "0x48077400faf11183c043feb5184a13ea628bb0db",
     "EURA": "0x12f31b73d812c6bb0d735a218c086d44d5fe5f89",
@@ -365,6 +366,7 @@
     "TOKEN": "0x4507cef57c46789ef8d1a19ea45f4216bae2b528",
     "INCO": "0xb617fab6b94ed1fe6df3cad71e1dc997927a2a0e",
     "DEFI": "0x6d106c0b8d2f47c5465bdbd58d1be253762cbbc1",
+    "ZK": "0xc71b5f631354be6853efe9c3ab6b9590f8302e81",
     "ZRO": "0x6985884c4392d348587b19cb9eaaf157f13271cd",
     "WSTETH": "0x26c5e01524d2e6280a48f2c50ff6de7e52e9611c",
     "CHEEMS": "0x0df0587216a4a1bb7d5082fdc491d93d2dd4b413",
@@ -376,8 +378,13 @@
     "BNBXBT": "0xa18bbdcd86e4178d10ecd9316667cfe4c4aa8717",
     "BADAI": "0x36f5675029e129b5fcabb29ec750ed268520acf7",
     "MUBARAK": "0x5c85d6c6825ab4032337f11ee92a72df936b46f6",
-    "USD1": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+    "USD1": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+    "GORILLA": "0xcf640fdf9b3d9e45cbd69fda91d7e22579c14444",
+    "RDO": "0xd86e6ef14b96d942ef0abf0720c549197ea8c528",
+    "SOPH": "0x31dba3c96481fde3cd81c2aaf51f2d8bf618c742",
+    "SKATE": "0x61dbbbb552dc893ab3aad09f289f811e67cef285",
+    "CUDIS": "0xc1353d3ee02fdbd4f65f92eee543cfd709049cb1"
   },
   "chain_id": 56,
-  "total_tokens": 376
+  "total_tokens": 383
 }
