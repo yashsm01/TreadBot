@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # Database settings
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "1234"
+    POSTGRES_PASSWORD: str = "@kash115347"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: str = "5432"
     POSTGRES_DB: str = "crypto_trading"
