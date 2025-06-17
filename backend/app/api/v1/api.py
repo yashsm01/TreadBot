@@ -10,7 +10,8 @@ from app.api.v1.endpoints import (
     portfolio_summary_routes,
     profit_routes,
     graph_routes,
-    swap_routes
+    swap_routes,
+    live_routes
 )
 
 api_router = APIRouter()
@@ -86,4 +87,11 @@ api_router.include_router(
     graph_routes.router,
     prefix="/graph",
     tags=["graph"]
+)
+
+# Include live data endpoints
+api_router.include_router(
+    live_routes.router,
+    prefix="/live",
+    tags=["live"]
 )
