@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:live": "node start-dev.js",
+    "dev:live-cjs": "node start-dev.cjs",
+    "dev:live-ps": "powershell -ExecutionPolicy Bypass -File start-dev.ps1",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
