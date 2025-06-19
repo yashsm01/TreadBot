@@ -1,6 +1,6 @@
 import React from 'react';
 import { Token } from '../types/trading';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity } from 'lucide-react';
 
 interface TokenCardProps {
   token: Token;
@@ -30,6 +30,13 @@ export const TokenCard: React.FC<TokenCardProps> = ({
       return `$${(volume / 1e6).toFixed(1)}M`;
     }
     return `$${(volume / 1e3).toFixed(1)}K`;
+  };
+
+  const getVolatilityColor = (volatility?: number) => {
+    if (!volatility) return 'text-gray-400';
+    if (volatility > 5) return 'text-red-400';
+    if (volatility > 2) return 'text-yellow-400';
+    return 'text-green-400';
   };
 
   const isPositive = token.change24h >= 0;
@@ -73,6 +80,31 @@ export const TokenCard: React.FC<TokenCardProps> = ({
         </div>
       </div>
 
+      {/* High/Low 24h Display */}
+      {(token.high24h || token.low24h) && (
+        <div className="mb-3 p-2 bg-gray-700/30 rounded-lg">
+          <div className="flex justify-between text-xs text-gray-400 mb-1">
+            <span>24h Range</span>
+            {token.volatility && (
+              <div className="flex items-center gap-1">
+                <Activity size={10} />
+                <span className={getVolatilityColor(token.volatility)}>
+                  {token.volatility.toFixed(1)}%
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-red-400">
+              L: {token.low24h ? formatPrice(token.low24h) : 'N/A'}
+            </span>
+            <span className="text-green-400">
+              H: {token.high24h ? formatPrice(token.high24h) : 'N/A'}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-between text-sm text-gray-400">
         <div>
           <span className="block">Volume</span>
@@ -83,6 +115,13 @@ export const TokenCard: React.FC<TokenCardProps> = ({
           <span className="text-white font-medium">{formatVolume(token.marketCap)}</span>
         </div>
       </div>
+
+      {/* Live Data Indicator */}
+      {token.timestamp && (
+        <div className="absolute bottom-2 right-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" title="Live data" />
+        </div>
+      )}
     </div>
   );
 };

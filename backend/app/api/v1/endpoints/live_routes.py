@@ -246,3 +246,4 @@ async def health_check():
             "error": str(e),
             "timestamp": int(datetime.now().timestamp() * 1000)
         }
+
