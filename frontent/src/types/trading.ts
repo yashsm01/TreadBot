@@ -7,6 +7,10 @@ export interface Token {
   volume: number;
   marketCap: number;
   icon: string;
+  high24h?: number;
+  low24h?: number;
+  volatility?: number;
+  timestamp?: number;
 }
 
 export interface TradingSignal {
@@ -20,10 +24,22 @@ export interface TradingSignal {
   timestamp: Date;
   status: "ACTIVE" | "COMPLETED" | "CANCELLED";
   pnl?: number;
+  momentum?: number;
+  volatility?: number;
 }
 
 export interface MarketData {
   tokens: Token[];
   signals: TradingSignal[];
   selectedToken: string | null;
+}
+
+export interface MarketSummary {
+  totalTokens: number;
+  totalVolume: number;
+  averageChange24h: number;
+  positivePerformers: number;
+  negativePerformers: number;
+  activeSignals: number;
+  timestamp: number;
 }
